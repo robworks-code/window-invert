@@ -15,6 +15,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WinEventHookListener _hook = new();
     private readonly Dictionary<nint, InvertOverlayWindow> _overlays = new();
     private readonly Dictionary<nint, TitleBarButtonWindow> _titleBarButtons = new();
+    private WindowPickerOverlay? _activePicker;
 
     public TrayApplicationContext()
     {
@@ -26,15 +27,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Pick a window...", null, (_, _) =>
         {
-            var picker = new WindowPickerOverlay(hwnd =>
+            _activePicker = new WindowPickerOverlay(hwnd =>
             {
                 if (_registry.TrackedWindows.TryGetValue(hwnd, out var info))
                 {
                     ToggleInvert(hwnd, _registry.TrackedWindows[hwnd].Rect);
                     RebuildWindowsMenu();
                 }
+                _activePicker = null;
             });
-            picker.Show();
+            _activePicker.Show();
         });
         _menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
