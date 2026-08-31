@@ -10,6 +10,27 @@ using Windows.Graphics.DirectX.Direct3D11;
 namespace WindowInvert.Native;
 
 /// <summary>
+/// One captured frame: the texture, plus the size of the live content inside it.
+/// </summary>
+/// <param name="Texture">
+/// The captured pixels. Valid only for the duration of the
+/// <see cref="CaptureEngine.FrameArrived"/> callback - see that event's lifetime
+/// contract - and must not be retained.
+/// </param>
+/// <param name="ContentWidth">Width of the live content, in pixels.</param>
+/// <param name="ContentHeight">Height of the live content, in pixels.</param>
+/// <remarks>
+/// The content size is carried separately because it is <b>not</b> the texture's
+/// size. The frame pool allocates fixed-size buffers and only grows them, so a
+/// window that has shrunk - or that is mid-resize, before
+/// <c>Direct3D11CaptureFramePool.Recreate</c> has caught up - arrives in a buffer
+/// larger than its live content, with stale pixels in the padding. A consumer that
+/// takes the texture's own dimensions as the frame size therefore draws that
+/// padding and scales the result wrongly. Crop to this size instead.
+/// </remarks>
+public readonly record struct CapturedFrame(ID3D11Texture2D Texture, int ContentWidth, int ContentHeight);
+
+/// <summary>
 /// Opens a <c>Windows.Graphics.Capture</c> session scoped to a single top-level
 /// window and raises <see cref="FrameArrived"/> with each captured frame as a
 /// D3D11 texture.
@@ -77,6 +98,12 @@ public sealed class CaptureEngine : IDisposable
     /// and is disposed as soon as it returns. A handler must not retain it.
     /// </para>
     /// <para>
+    /// <b>Size:</b> use <see cref="CapturedFrame.ContentWidth"/> /
+    /// <see cref="CapturedFrame.ContentHeight"/>, not the texture's own dimensions -
+    /// the frame pool's buffers are larger than the live content whenever the
+    /// captured window has shrunk or is mid-resize. See <see cref="CapturedFrame"/>.
+    /// </para>
+    /// <para>
     /// <b>A handler must not call <see cref="Start"/>, <see cref="Stop"/> or
     /// <see cref="Dispose"/>.</b> Those are rejected with an
     /// <see cref="InvalidOperationException"/> rather than being allowed to deadlock
@@ -91,7 +118,7 @@ public sealed class CaptureEngine : IDisposable
     /// deadlocks. Marshal with a post/BeginInvoke, or do the work inline.
     /// </para>
     /// </summary>
-    public event Action<ID3D11Texture2D>? FrameArrived;
+    public event Action<CapturedFrame>? FrameArrived;
 
     /// <summary>
     /// The D3D11 device the frames were captured on, or <see langword="null"/>
@@ -328,7 +355,10 @@ public sealed class CaptureEngine : IDisposable
                     var texture = Direct3D11Helper.CreateD3D11Texture2DFromSurface(surface);
                     try
                     {
-                        FrameArrived?.Invoke(texture);
+                        // ContentSize, not the texture's own size: the pool's buffers
+                        // only ever grow, so the texture can be larger than the live
+                        // content and carry stale pixels in the padding. See CapturedFrame.
+                        FrameArrived?.Invoke(new CapturedFrame(texture, contentSize.Width, contentSize.Height));
                     }
                     finally
                     {

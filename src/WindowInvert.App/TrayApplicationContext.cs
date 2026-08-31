@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using WindowInvert.Core.Geometry;
 using WindowInvert.Core.InvertState;
 using WindowInvert.Core.WindowTracking;
@@ -132,7 +133,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (isNowInverted)
         {
-            var overlay = new InvertOverlayWindow(currentRect, hwnd);
+            InvertOverlayWindow overlay;
+
+            try
+            {
+                overlay = new InvertOverlayWindow(currentRect, hwnd);
+            }
+            catch (Exception ex)
+            {
+                // Building the overlay can fail for reasons that are transient or
+                // specific to one window - capture unsupported, the source window
+                // closing mid-toggle, a graphics device that would not create. The
+                // constructor releases whatever it acquired, so the only thing left
+                // to undo is this method's own state change. Rolling it back keeps
+                // the tray menu and the title-bar button matching reality and lets
+                // the user simply try again; leaving it set would show the window as
+                // inverted forever with no overlay and no way to clear it, and
+                // letting the exception escape a WinForms click handler would put an
+                // unhandled-exception dialog on screen.
+                _invertedWindows.Remove(hwnd);
+                Debug.WriteLine($"Toggling invert on 0x{hwnd:X} failed: {ex}");
+                return;
+            }
+
             overlay.Show();
             _overlays[hwnd] = overlay;
         }

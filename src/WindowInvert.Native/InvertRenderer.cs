@@ -85,18 +85,22 @@ public sealed class InvertRenderer : IDisposable
     private nint _overlayHwnd;
     private uint _swapChainWidth;
     private uint _swapChainHeight;
-    private long _framesPresented;
-    private Exception? _lastRenderError;
     private bool _disposed;
+
+    /// <summary>
+    /// Read without taking <see cref="_renderLock"/> - that lock is held across
+    /// <c>Present</c>, so a UI-thread read of a diagnostic must not want it.
+    /// </summary>
+    private long _framesPresented;
+
+    /// <summary>Same reasoning as <see cref="_framesPresented"/>.</summary>
+    private volatile Exception? _lastRenderError;
 
     /// <summary>
     /// Number of frames successfully drawn and presented since the last
     /// <see cref="AttachToOverlay"/>. Diagnostic only.
     /// </summary>
-    public long FramesPresented
-    {
-        get { lock (_renderLock) { return _framesPresented; } }
-    }
+    public long FramesPresented => Interlocked.Read(ref _framesPresented);
 
     /// <summary>
     /// The exception from the most recent failed frame, or <see langword="null"/>
@@ -104,10 +108,7 @@ public sealed class InvertRenderer : IDisposable
     /// than rethrown - see the comment in <see cref="OnFrameArrived"/> - so this
     /// is the only way to observe them.
     /// </summary>
-    public Exception? LastRenderError
-    {
-        get { lock (_renderLock) { return _lastRenderError; } }
-    }
+    public Exception? LastRenderError => _lastRenderError;
 
     /// <summary>
     /// Binds a DirectComposition visual tree to <paramref name="overlayHwnd"/> and
@@ -159,10 +160,15 @@ public sealed class InvertRenderer : IDisposable
                 _invertEffect = new ColorMatrix(_d2dContext)
                 {
                     Matrix = InvertMatrix,
-                    // Captured frames and the swap chain are both premultiplied, and
-                    // for the opaque pixels that dominate a window that is identical
-                    // to straight alpha. Stated explicitly rather than left to the
-                    // effect's default so the choice is visible next to the matrix.
+                    // Premultiplied is the only correct value here, and the difference
+                    // is not cosmetic. In this mode Direct2D unpremultiplies, applies
+                    // the matrix, and re-premultiplies, which is what keeps the
+                    // A' = A pass-through row producing valid output where alpha is 0.
+                    // Under Straight, a fully transparent source pixel comes out
+                    // FF FF FF 00 - colour greater than alpha, which is not a legal
+                    // premultiplied value - and DWM composites that additively as solid
+                    // white, so every rounded corner and every strip of transparent
+                    // padding would render as a white block. Measured, not assumed.
                     AlphaMode = ColorMatrixAlphaMode.Premultiplied,
                 };
 
@@ -171,7 +177,13 @@ public sealed class InvertRenderer : IDisposable
                 _compVisual = _compDevice.CreateVisual();
                 _compTarget.SetRoot(_compVisual).CheckError();
 
-                (_swapChainWidth, _swapChainHeight) = GetOverlayPixelSize(overlayHwnd);
+                // Unlike the per-frame path, there is no last-known-good size to fall
+                // back on here - the swap chain cannot be created without one.
+                if (!TryGetOverlayPixelSize(overlayHwnd, out _swapChainWidth, out _swapChainHeight))
+                {
+                    throw new InvalidOperationException(
+                        $"GetClientRect failed for overlay window 0x{overlayHwnd:X}.");
+                }
 
                 // IDXGIDevice::GetParent returns the ADAPTER, not the factory - the
                 // factory is the adapter's parent, one level further up.
@@ -219,7 +231,7 @@ public sealed class InvertRenderer : IDisposable
         }
     }
 
-    private void OnFrameArrived(ID3D11Texture2D frame)
+    private void OnFrameArrived(CapturedFrame frame)
     {
         lock (_renderLock)
         {
@@ -238,7 +250,7 @@ public sealed class InvertRenderer : IDisposable
                 // returns, so nothing here may outlive the callback - hence the
                 // SetInput(0, null) in the finally below, which is what actually
                 // stops the effect from pinning it.
-                using var frameSurface = frame.QueryInterface<IDXGISurface>();
+                using var frameSurface = frame.Texture.QueryInterface<IDXGISurface>();
                 using var sourceBitmap = _d2dContext.CreateBitmapFromDxgiSurface(
                     frameSurface,
                     new BitmapProperties1(
@@ -256,11 +268,14 @@ public sealed class InvertRenderer : IDisposable
                         96f,
                         BitmapOptions.Target | BitmapOptions.CannotDraw));
 
-                var sourceSize = sourceBitmap.PixelSize;
-                if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
-                {
-                    return;
-                }
+                // The live content, never the buffer. The frame pool's buffers only
+                // grow, so the texture can be bigger than the window and carry stale
+                // pixels past the content edge; drawing those would both show garbage
+                // and skew the scale. Clamped because a source rect outside the
+                // bitmap is not drawable.
+                var bufferSize = sourceBitmap.PixelSize;
+                var contentWidth = Math.Clamp(frame.ContentWidth, 1, bufferSize.Width);
+                var contentHeight = Math.Clamp(frame.ContentHeight, 1, bufferSize.Height);
 
                 _invertEffect.SetInput(0, sourceBitmap, true);
 
@@ -268,22 +283,59 @@ public sealed class InvertRenderer : IDisposable
                 _d2dContext.BeginDraw();
                 drawing = true;
 
-                // Both bitmaps are created at 96 DPI, so one DIP is one pixel and
-                // this scale maps the captured window onto the overlay's client
-                // area even when the two differ by a pixel or two.
-                _d2dContext.Transform = Matrix3x2.CreateScale(
-                    _swapChainWidth / (float)sourceSize.Width,
-                    _swapChainHeight / (float)sourceSize.Height);
+                // Both bitmaps are 96 DPI, so one DIP is one pixel throughout.
+                //
+                // The overlay is sized from the source's GetWindowRect, which includes
+                // the invisible resize border and so does not generally equal the
+                // DWM-composed content. Rather than stretch to hide that, the content
+                // is scaled *uniformly* and centred: a wrong aspect ratio is worse
+                // than a letterbox, and this output is read under screen magnification,
+                // where any resampling of text is amplified. The exact-match case -
+                // the overwhelmingly common one - takes the identity transform, so it
+                // is a pixel-for-pixel copy with no resampling whatsoever.
+                var exact = contentWidth == _swapChainWidth && contentHeight == _swapChainHeight;
+                if (exact)
+                {
+                    _d2dContext.Transform = Matrix3x2.Identity;
+                }
+                else
+                {
+                    var scale = Math.Min(
+                        _swapChainWidth / (float)contentWidth,
+                        _swapChainHeight / (float)contentHeight);
+                    _d2dContext.Transform =
+                        Matrix3x2.CreateScale(scale)
+                        * Matrix3x2.CreateTranslation(
+                            (_swapChainWidth - (contentWidth * scale)) / 2f,
+                            (_swapChainHeight - (contentHeight * scale)) / 2f);
+                }
+
                 _d2dContext.Clear(new Color4(0f, 0f, 0f, 0f));
-                _d2dContext.DrawImage(_invertEffect);
+
+                // The image rectangle crops the effect output to the live content, so
+                // the pool's padding is never sampled - including by the interpolator
+                // at the content edge.
+                _d2dContext.DrawImage(
+                    _invertEffect.Output,
+                    Vector2.Zero,
+                    new Vortice.RawRectF(0f, 0f, contentWidth, contentHeight),
+                    InterpolationMode.Linear,
+                    Vortice.Direct2D1.CompositeMode.SourceOver);
 
                 var endDraw = _d2dContext.EndDraw();
                 drawing = false;
                 endDraw.CheckError();
 
-                _swapChain.Present(1, PresentFlags.None).CheckError();
+                // Sync interval 0, deliberately. This runs inside the engine's frame
+                // callback, which holds the engine lock and still owns one of only two
+                // frame-pool buffers, so waiting for the compositor here would pin a
+                // buffer for up to a refresh interval and halve capture throughput -
+                // as well as stalling a UI-thread Dispose or AttachToOverlay for that
+                // long. DirectComposition paces presentation of a composition swap
+                // chain itself, so interval 1 is not what prevents tearing.
+                _swapChain.Present(0, PresentFlags.None).CheckError();
 
-                _framesPresented++;
+                Interlocked.Increment(ref _framesPresented);
                 _lastRenderError = null;
             }
             catch (Exception ex)
@@ -329,7 +381,13 @@ public sealed class InvertRenderer : IDisposable
     /// </summary>
     private void EnsureSwapChainSize()
     {
-        var (width, height) = GetOverlayPixelSize(_overlayHwnd);
+        // A failed GetClientRect means "size unknown", not "size is 1x1". Resizing to
+        // a fallback would throw away the presented content and flash the overlay for
+        // a frame; keeping the last known good size is invisible and self-correcting.
+        if (!TryGetOverlayPixelSize(_overlayHwnd, out var width, out var height))
+        {
+            return;
+        }
 
         if (width == _swapChainWidth && height == _swapChainHeight)
         {
@@ -371,21 +429,23 @@ public sealed class InvertRenderer : IDisposable
     }
 
     /// <summary>
-    /// The overlay's client size in pixels, clamped to at least 1x1 because a
-    /// swap chain may not have a zero dimension and a minimized or zero-sized
-    /// overlay legitimately reports one.
+    /// The overlay's client size in pixels, or <see langword="false"/> if the size
+    /// could not be read. The size is clamped to at least 1x1: a swap chain may not
+    /// have a zero dimension, and a minimized or zero-sized overlay legitimately
+    /// reports one.
     /// </summary>
-    private static (uint Width, uint Height) GetOverlayPixelSize(nint hwnd)
+    private static bool TryGetOverlayPixelSize(nint hwnd, out uint width, out uint height)
     {
         if (!NativeMethods.GetClientRect(hwnd, out var rect))
         {
-            return (1, 1);
+            width = 0;
+            height = 0;
+            return false;
         }
 
-        var width = rect.Right - rect.Left;
-        var height = rect.Bottom - rect.Top;
-
-        return ((uint)Math.Max(1, width), (uint)Math.Max(1, height));
+        width = (uint)Math.Max(1, rect.Right - rect.Left);
+        height = (uint)Math.Max(1, rect.Bottom - rect.Top);
+        return true;
     }
 
     public void Dispose()
@@ -443,7 +503,7 @@ public sealed class InvertRenderer : IDisposable
         _overlayHwnd = 0;
         _swapChainWidth = 0;
         _swapChainHeight = 0;
-        _framesPresented = 0;
+        Interlocked.Exchange(ref _framesPresented, 0);
         _lastRenderError = null;
     }
 }

@@ -69,11 +69,29 @@ internal sealed class InvertOverlayWindow : NativeWindow
         // toggle-on would restack it above the overlay in the meantime.
         SetWindowPos(Handle, HWND_TOPMOST, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height, SWP_NOACTIVATE);
 
-        // Start capturing before attaching: the renderer builds its Direct2D
-        // device on the engine's D3D11 device, which only exists once the engine
-        // is running.
-        _captureEngine.Start(sourceHwnd);
-        _renderer.AttachToOverlay(Handle, _captureEngine);
+        try
+        {
+            // Start capturing before attaching: the renderer builds its Direct2D
+            // device on the engine's D3D11 device, which only exists once the engine
+            // is running.
+            _captureEngine.Start(sourceHwnd);
+            _renderer.AttachToOverlay(Handle, _captureEngine);
+        }
+        catch
+        {
+            // Destroy() can never run for an instance whose constructor threw - it
+            // never reaches the caller, let alone TrayApplicationContext's overlay
+            // map - so everything acquired above has to be released here. Leaving it
+            // would strand a live Windows.Graphics.Capture session with no owner,
+            // which on Windows 11 means the yellow capture border sits on the user's
+            // window for the rest of the process's life with no way to clear it, plus
+            // an orphaned topmost click-through HWND that nothing will ever destroy.
+            // Same order as Destroy(): stop producing, then tear down the consumer.
+            _captureEngine.Dispose();
+            _renderer.Dispose();
+            DestroyHandle();
+            throw;
+        }
     }
 
     public void Reposition(WindowRect sourceRect)
