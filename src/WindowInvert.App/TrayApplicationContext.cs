@@ -185,6 +185,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (info.IsMinimized) button.Hide();
                 else button.Show();
             }
+
+            // Restoring usually activates the window too, and the foreground event
+            // would then repair the order - but not every restore activates, and
+            // showing a window puts it at the top of its band regardless. Same
+            // assertion, one more trigger point.
+            if (!info.IsMinimized)
+            {
+                RestackWindow(info.Hwnd);
+            }
         };
 
         _hook.WindowEvent += (type, hwnd) => _registry.HandleWinEvent(type, hwnd);
