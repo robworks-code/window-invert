@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32;
 using WindowInvert.Core.Geometry;
 using WindowInvert.Core.InvertState;
 using WindowInvert.Core.Notifications;
@@ -62,6 +63,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _registry = new WindowRegistry(new Win32WindowApi());
 
+        // Before the menu is built, so the first time it opens it is already
+        // right rather than correcting itself on the second show.
+        MenuTheme.Apply();
+        SystemEvents.UserPreferenceChanged += HandleUserPreferenceChanged;
+
         _windowsMenu = new ToolStripMenuItem("Windows");
         _windowsMenu.DropDownClosed += (_, _) =>
         {
@@ -70,7 +76,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 RebuildWindowsMenu();
             }
         };
-        _menu = new ContextMenuStrip();
+        _menu = new MagnifiableContextMenuStrip();
+
+        // Diagnostic only. CloseReason is the single fact that separates "our own
+        // z-order work is dismissing the menu" from "WinForms is closing it for a
+        // reason of its own", and it is not observable any other way.
+        _menu.Opening += (_, _) => Diagnostics.Log("MENU opening");
+        _menu.Closing += HandleMenuClosing;
+        _menu.Closed += (_, e) =>
+        {
+            Diagnostics.Log($"MENU closed reason={e.CloseReason}");
+
+            // Restacking is suppressed while the menu is up, so whatever z-order
+            // changes were skipped are applied now, in one pass.
+            //
+            // Posted rather than called: Visible is not reliably false yet inside
+            // Closed, and RestackWindow's own guard reads it - so calling
+            // directly would skip the very work this is here to catch up on, and
+            // do it silently.
+            if (_uiMarshal.IsHandleCreated)
+            {
+                _uiMarshal.BeginInvoke(RestackEverything);
+            }
+        };
+        _windowsMenu.DropDownOpening += (_, _) => Diagnostics.Log("SUBMENU opening");
+        _windowsMenu.DropDownClosed += (_, _) => Diagnostics.Log("SUBMENU closed");
+
         _menu.Items.Add(_windowsMenu);
         _menu.Items.Add(new ToolStripSeparator());
 
@@ -123,6 +154,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _registry.WindowTracked += info =>
         {
+            if (Diagnostics.IsEnabled)
+            {
+                Diagnostics.Log(
+                    $"TRACKED 0x{info.Hwnd:X} {Diagnostics.Describe(info.Hwnd)} menuOpen={_menu.Visible}");
+            }
+
             EnsureTitleBarButton(info);
             RebuildWindowsMenu();
         };
@@ -146,6 +183,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _registry.WindowGeometryChanged += info =>
         {
+            if (Diagnostics.IsEnabled)
+            {
+                Diagnostics.Log($"GEOMETRY 0x{info.Hwnd:X} \"{info.Title}\" menuOpen={_menu.Visible}");
+            }
+
             if (_overlays.TryGetValue(info.Hwnd, out var overlay))
             {
                 overlay.Reposition(info.Rect);
@@ -271,12 +313,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// </summary>
     private void RestackWindow(nint sourceHwnd)
     {
+        // Nothing this method does is worth doing while the tray menu is open,
+        // and doing it is actively harmful: every call reorders the topmost band
+        // underneath a menu that is itself a topmost popup. Refusing the close
+        // (see HandleMenuClosing) stops the menu disappearing, but the churn
+        // beneath it remains a real cost - the surfaces being reordered are
+        // behind the menu the user is reading. The skipped work is applied in one
+        // pass when the menu closes.
+        if (_menu.Visible)
+        {
+            Diagnostics.Log($"RESTACK skipped (menu open) source=0x{sourceHwnd:X}");
+            return;
+        }
+
         var overlayHandle = _overlays.TryGetValue(sourceHwnd, out var overlay) ? overlay.Handle : 0;
         var buttonHandle = _titleBarButtons.TryGetValue(sourceHwnd, out var button) ? button.Handle : 0;
 
         if (overlayHandle == 0 && buttonHandle == 0)
         {
             return;
+        }
+
+        // Diagnostic only. This is the call that reorders the topmost band, which
+        // is the suspected cause of the menu being dismissed while it is open.
+        if (Diagnostics.IsEnabled)
+        {
+            Diagnostics.Log(
+                $"RESTACK source=0x{sourceHwnd:X} overlay=0x{overlayHandle:X} button=0x{buttonHandle:X}"
+                + $" menuOpen={_menu.Visible}");
         }
 
         // One retry, because every input here can go stale between reading it and
@@ -356,6 +420,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// </summary>
     private void RestackAfterForegroundChange(nint foregroundHwnd)
     {
+        if (Diagnostics.IsEnabled)
+        {
+            Diagnostics.Log(
+                $"FOREGROUND 0x{foregroundHwnd:X} {Diagnostics.Describe(foregroundHwnd)} menuOpen={_menu.Visible}");
+        }
+
         RestackWindow(foregroundHwnd);
 
         var ownerRoot = WindowStacking.GetOwnerRoot(foregroundHwnd);
@@ -367,6 +437,81 @@ internal sealed class TrayApplicationContext : ApplicationContext
         foreach (var hwnd in _overlays.Keys.ToArray())
         {
             if (hwnd != foregroundHwnd && hwnd != ownerRoot)
+            {
+                RestackWindow(hwnd);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Records why the menu closed. Diagnostics only - nothing here refuses a
+    /// close, deliberately.
+    /// <para>
+    /// Cancelling was tried, for two different reasons, and both attempts made
+    /// things worse in the same way. By the time <c>Closing</c> is raised Windows
+    /// has already left menu mode, so the dropdown has given up its capture and
+    /// focus; refusing the close leaves a menu on screen that nothing can dismiss
+    /// afterwards - not Escape, not clicking elsewhere, not another window taking
+    /// the foreground. Two traces showed it plainly: one cancelled close, then no
+    /// further close attempt at all while the menu sat open for minutes across
+    /// dozens of foreground changes.
+    /// </para>
+    /// <para>
+    /// So the Alt problem is solved where it starts, by refusing the keystroke in
+    /// <see cref="MagnifiableContextMenuStrip"/> before a close is ever
+    /// initiated, and the causes that were this app's own doing are fixed at
+    /// source: the tray overflow flyout is no longer tracked, and restacking is
+    /// suspended while the menu is open.
+    /// </para>
+    /// </summary>
+    /// <para>
+    /// Measured, not assumed. A trace of a live session showed the menu opening,
+    /// staying up for six seconds, and then dying two milliseconds after the
+    /// system tray overflow flyout took the foreground back -
+    /// <c>reason=AppFocusChange</c>. The flyout is unavoidable here: it is where
+    /// this app's icon lives until it is promoted onto the taskbar, so it has to
+    /// be open for the icon to be right-clicked at all, and it and the menu then
+    /// trade the foreground between them. Unrelated applications do the same
+    /// thing on their own schedule - a smart-home tray app on the test machine
+    /// grabbed the foreground by itself, which is enough to close the menu
+    /// mid-use with nothing on screen to explain it.
+    /// </para>
+    /// <para>
+    /// This is worse than an annoyance for the users this application is for.
+    /// Working through a magnified viewport means crossing the screen in
+    /// sections to reach the menu and read down it; a menu that can vanish at
+    /// any moment because an unrelated program woke up is one that cannot be
+    /// used at all. The reported symptom was exactly that - never getting as far
+    /// as selecting anything.
+    /// </para>
+    /// <para>
+    /// Only <c>AppFocusChange</c> is refused. Clicking away
+    /// (<c>AppClicked</c>), pressing Escape (<c>Keyboard</c>), choosing an item
+    /// (<c>ItemClicked</c>) and closing it in code (<c>CloseCalled</c>) all still
+    /// work, so the menu is never stuck - it just no longer treats another
+    /// program's activity as an instruction to disappear.
+    /// </para>
+    /// </summary>
+    private static void HandleMenuClosing(object? sender, ToolStripDropDownClosingEventArgs e)
+    {
+        Diagnostics.Log(
+            $"MENU closing reason={e.CloseReason} modifiers={Control.ModifierKeys}");
+    }
+
+    /// <summary>
+    /// Restacks every surface this app owns. Used to catch up after the tray menu
+    /// closes, since restacking is suppressed while it is open.
+    /// </summary>
+    private void RestackEverything()
+    {
+        foreach (var hwnd in _overlays.Keys.ToArray())
+        {
+            RestackWindow(hwnd);
+        }
+
+        foreach (var hwnd in _titleBarButtons.Keys.ToArray())
+        {
+            if (!_overlays.ContainsKey(hwnd))
             {
                 RestackWindow(hwnd);
             }
@@ -844,8 +989,50 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Repaints the menu when the user switches Windows between light and dark
+    /// while the app is running, which for an app that starts at logon and stays
+    /// up for days is not a rare event.
+    /// <para>
+    /// <see cref="SystemEvents"/> raises this on its own thread, so the work is
+    /// marshalled: touching <see cref="ToolStripManager"/> from off the UI thread
+    /// is exactly the kind of thing that fails intermittently rather than
+    /// loudly. The categories are broader than strictly necessary because which
+    /// one Windows reports for an apps-theme change is not contractual, and
+    /// re-applying an unchanged theme costs one registry read.
+    /// </para>
+    /// </summary>
+    private void HandleUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is not (UserPreferenceCategory.General
+            or UserPreferenceCategory.Color
+            or UserPreferenceCategory.VisualStyle))
+        {
+            return;
+        }
+
+        if (!_uiMarshal.IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            _uiMarshal.BeginInvoke(MenuTheme.Apply);
+        }
+        catch (Exception ex)
+        {
+            // The handle can go between the check above and the post, during
+            // shutdown. A theme repaint is never worth taking the app down.
+            Debug.WriteLine($"Re-applying the menu theme failed: {ex}");
+        }
+    }
+
     protected override void ExitThreadCore()
     {
+        // Static event, so this outlives the instance if it is not detached -
+        // the handler would be called on a disposed context.
+        SystemEvents.UserPreferenceChanged -= HandleUserPreferenceChanged;
         _hook.Stop();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

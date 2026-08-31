@@ -15,6 +15,8 @@ public class NonApplicationWindowClassesTests
     [InlineData("WorkerW")]
     [InlineData("Shell_TrayWnd")]
     [InlineData("Shell_SecondaryTrayWnd")]
+    [InlineData("TopLevelWindowForOverflowXamlIsland")]
+    [InlineData("NotifyIconOverflowWindow")]
     [InlineData("MagUIClass")]
     public void ShellAndAccessibilityWindows_AreNotApplicationWindows(string className)
     {

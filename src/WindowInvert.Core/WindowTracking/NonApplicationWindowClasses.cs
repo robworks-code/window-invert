@@ -49,6 +49,21 @@ public static class NonApplicationWindowClasses
         "Shell_TrayWnd",
         "Shell_SecondaryTrayWnd",
 
+        // The tray overflow flyout - the panel behind the taskbar's chevron,
+        // where this application's own icon lives when it is not promoted. It
+        // is titled ("System tray overflow window"), so it was tracked, given a
+        // toggle button, and listed in the menu.
+        //
+        // Tracking it was not merely untidy, it broke the tray menu. The flyout
+        // has to be open for the icon to be right-clicked, so it and the menu
+        // are on screen together and trade the foreground between them. Every
+        // one of those trades ran a restack against the flyout's button, on top
+        // of the foreground change that was already dismissing the menu.
+        // Windows 11 uses the XamlIsland class; Windows 10's equivalent is
+        // NotifyIconOverflowWindow.
+        "TopLevelWindowForOverflowXamlIsland",
+        "NotifyIconOverflowWindow",
+
         // Windows Magnifier's own window. This one is titled, so it was offered
         // in the tray menu as an ordinary invertible window. Putting a capture
         // session and an inversion overlay on top of the magnifier is a way to
