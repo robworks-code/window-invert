@@ -300,9 +300,10 @@ public sealed class InvertRenderer : IDisposable
                 // composes, so for an ordinary window the two match exactly and this
                 // takes the identity transform - a pixel-for-pixel copy with no
                 // resampling at all. Measured on a normal resizable window: capture
-                // content, extended frame bounds and overlay client area all agree,
-                // while GetWindowRect is 14 px wider and 7 px taller (the invisible
-                // resize border), which is what the overlay used to be sized from.
+                // content, extended frame bounds and overlay client area all agree at
+                // 404x312, while GetWindowRect reports 420x320 - 16 px wider and 8 px
+                // taller, the invisible resize border (left 8, top 0, right 8,
+                // bottom 8), which is what the overlay used to be sized from.
                 //
                 // The scaled path below is the safety net for the cases where they
                 // still disagree - mid-resize, or a window whose frame DWM reports
