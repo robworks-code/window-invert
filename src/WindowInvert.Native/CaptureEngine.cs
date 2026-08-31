@@ -25,8 +25,11 @@ public sealed class CaptureEngine : IDisposable
     /// the whole callback (including the <see cref="FrameArrived"/> invocation) so
     /// that teardown cannot dispose the device out from under a handler that is
     /// mid-render. <see cref="Stop"/> takes the same lock; because
-    /// <see cref="System.Threading.Monitor"/> is re-entrant, a handler that calls
-    /// <see cref="Stop"/> on itself does not deadlock.
+    /// this lock is held across the <see cref="FrameArrived"/> invocation, a handler
+    /// must never call back into <see cref="Start"/>/<see cref="Stop"/>/
+    /// <see cref="Dispose"/>, and must never block waiting on another thread - see
+    /// <see cref="ThrowIfOnCallbackThread"/> for why, and for the guard that rejects
+    /// the first case outright instead of deadlocking or corrupting state.
     /// </summary>
     private readonly object _sync = new();
 
@@ -50,6 +53,15 @@ public sealed class CaptureEngine : IDisposable
     private bool _running;
 
     /// <summary>
+    /// Managed thread id of the thread currently inside <see cref="OnFrameArrived"/>,
+    /// or 0 when no callback is running. Only ever set while <see cref="_sync"/> is
+    /// held, so at most one thread owns it at a time. Volatile because
+    /// <see cref="ThrowIfOnCallbackThread"/> reads it from other threads before
+    /// taking any lock.
+    /// </summary>
+    private volatile int _callbackThreadId;
+
+    /// <summary>
     /// Raised once per captured frame.
     /// <para>
     /// <b>Threading:</b> raised on an arbitrary thread pool thread, never on the
@@ -63,6 +75,20 @@ public sealed class CaptureEngine : IDisposable
     /// <para>
     /// <b>Lifetime:</b> the texture is valid only for the duration of the callback
     /// and is disposed as soon as it returns. A handler must not retain it.
+    /// </para>
+    /// <para>
+    /// <b>A handler must not call <see cref="Start"/>, <see cref="Stop"/> or
+    /// <see cref="Dispose"/>.</b> Those are rejected with an
+    /// <see cref="InvalidOperationException"/> rather than being allowed to deadlock
+    /// or corrupt engine state; to stop capturing in response to a frame, signal
+    /// another thread and stop from there.
+    /// </para>
+    /// <para>
+    /// <b>A handler must not synchronously block waiting on another thread</b> - a
+    /// <c>Control.Invoke</c> or <c>SynchronizationContext.Send</c> onto the UI thread,
+    /// for example. The engine holds its internal lock across this callback, so a
+    /// handler that waits on a UI thread which is itself calling <see cref="Stop"/>
+    /// deadlocks. Marshal with a post/BeginInvoke, or do the work inline.
     /// </para>
     /// </summary>
     public event Action<ID3D11Texture2D>? FrameArrived;
@@ -91,6 +117,10 @@ public sealed class CaptureEngine : IDisposable
     /// </summary>
     public void Start(nint hwnd)
     {
+        // Checked before taking any lock - acquiring _lifecycleGate from the callback
+        // thread is itself one of the deadlock shapes this rejects.
+        ThrowIfOnCallbackThread(nameof(Start));
+
         if (hwnd == 0)
         {
             throw new ArgumentException("Window handle must not be null.", nameof(hwnd));
@@ -159,10 +189,15 @@ public sealed class CaptureEngine : IDisposable
     /// <summary>
     /// Stops capturing and releases every graphics resource the engine owns,
     /// including <see cref="Device"/>. Idempotent. Blocks until any in-flight
-    /// frame callback has returned.
+    /// frame callback has returned, and therefore must not be called from inside a
+    /// <see cref="FrameArrived"/> handler - doing so throws
+    /// <see cref="InvalidOperationException"/>.
     /// </summary>
     public void Stop()
     {
+        // Checked before taking any lock - see ThrowIfOnCallbackThread.
+        ThrowIfOnCallbackThread(nameof(Stop));
+
         lock (_lifecycleGate)
         {
             StopCore();
@@ -224,6 +259,43 @@ public sealed class CaptureEngine : IDisposable
         d3dDevice?.Dispose();
     }
 
+    /// <summary>
+    /// Rejects re-entrant lifecycle calls made from inside a <see cref="FrameArrived"/>
+    /// handler. Calling <see cref="Start"/>/<see cref="Stop"/>/<see cref="Dispose"/>
+    /// from a handler is explicitly unsupported, and is failed fast here rather than
+    /// left to corrupt state, because <see cref="System.Threading.Monitor"/>
+    /// re-entrancy does <b>not</b> make it safe - it fails three separate ways:
+    /// <list type="number">
+    /// <item><description>Deterministic <see cref="NullReferenceException"/>: teardown
+    /// nulls <c>_framePool</c> and defaults <c>_poolSize</c>, then control returns
+    /// into <see cref="OnFrameArrived"/> past the frame's <c>using</c> block, where a
+    /// stale <c>contentSize</c> local is compared against the defaulted
+    /// <c>_poolSize</c> and <c>Recreate</c> is called on the now-null pool.</description></item>
+    /// <item><description>Hard hang: re-entering <c>lock (_sync)</c> only decrements
+    /// the recursion count, so the callback thread still owns <c>_sync</c> while
+    /// <c>_framePool.Dispose()</c> runs - reintroducing, on this one path, exactly the
+    /// dispose-under-the-callback-lock deadlock the two-lock split was written to
+    /// remove.</description></item>
+    /// <item><description>Lock-order inversion: the handler thread holds <c>_sync</c>
+    /// and wants <c>_lifecycleGate</c>, while a UI thread in <see cref="Start"/> holds
+    /// <c>_lifecycleGate</c> and waits for <c>_sync</c>.</description></item>
+    /// </list>
+    /// Moving the handler invocation outside <c>_sync</c> would make re-entrancy safe,
+    /// but at a worse price: <c>_sync</c> is what stops <see cref="Stop"/> from
+    /// disposing the shared D3D11 device while a handler is mid-render, and that race
+    /// is the common path (the UI thread toggling invert off during a frame), whereas
+    /// nothing in this application calls back into the engine from a handler.
+    /// </summary>
+    private void ThrowIfOnCallbackThread(string member)
+    {
+        if (_callbackThreadId != 0 && _callbackThreadId == Environment.CurrentManagedThreadId)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(CaptureEngine)}.{member} must not be called from a {nameof(FrameArrived)} handler. " +
+                "Signal the intent to another thread and stop the engine from there instead.");
+        }
+    }
+
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
         lock (_sync)
@@ -235,29 +307,54 @@ public sealed class CaptureEngine : IDisposable
 
             SizeInt32 contentSize;
 
-            using (var frame = _framePool.TryGetNextFrame())
+            _callbackThreadId = Environment.CurrentManagedThreadId;
+            try
             {
-                if (frame is null)
+                using (var frame = _framePool.TryGetNextFrame())
                 {
-                    return;
-                }
+                    if (frame is null)
+                    {
+                        return;
+                    }
 
-                contentSize = frame.ContentSize;
+                    contentSize = frame.ContentSize;
 
-                var texture = Direct3D11Helper.CreateD3D11Texture2DFromSurface(frame.Surface);
-                try
-                {
-                    FrameArrived?.Invoke(texture);
+                    // IDirect3DSurface projects WinRT's IClosable as IDisposable, so
+                    // the wrapper this property hands back is ours to release - the
+                    // same inherited-member trap that hid IDirect3DDevice's
+                    // IDisposable, and equally invisible in a declared-member dump.
+                    using var surface = frame.Surface;
+
+                    var texture = Direct3D11Helper.CreateD3D11Texture2DFromSurface(surface);
+                    try
+                    {
+                        FrameArrived?.Invoke(texture);
+                    }
+                    finally
+                    {
+                        // Disposal is idempotent, so a handler that also disposes the
+                        // texture (taking the ownership the event's lifetime contract
+                        // offers) is fine; this guarantees the release either way,
+                        // which at capture frame rates is the difference between
+                        // steady state and exhausting video memory in seconds.
+                        texture.Dispose();
+                    }
                 }
-                finally
-                {
-                    // Disposal is idempotent, so a handler that also disposes the
-                    // texture (taking the ownership the event's lifetime contract
-                    // offers) is fine; this guarantees the release either way,
-                    // which at capture frame rates is the difference between
-                    // steady state and exhausting video memory in seconds.
-                    texture.Dispose();
-                }
+            }
+            finally
+            {
+                _callbackThreadId = 0;
+            }
+
+            // Re-read the state rather than trusting what was captured above. The
+            // guard in ThrowIfOnCallbackThread should make it impossible to arrive
+            // here torn down, but a handler that *swallowed* that InvalidOperationException
+            // would resume right here - so this stays defensive rather than relying on
+            // an exception nobody caught.
+            var pool = _framePool;
+            if (!_running || pool is null || _winrtDevice is null)
+            {
+                return;
             }
 
             // The frame pool's buffers are a fixed size, so a resized window would
@@ -268,7 +365,7 @@ public sealed class CaptureEngine : IDisposable
                 && (contentSize.Width != _poolSize.Width || contentSize.Height != _poolSize.Height))
             {
                 _poolSize = contentSize;
-                _framePool.Recreate(_winrtDevice, PixelFormat, FramePoolBufferCount, contentSize);
+                pool.Recreate(_winrtDevice, PixelFormat, FramePoolBufferCount, contentSize);
             }
         }
     }
