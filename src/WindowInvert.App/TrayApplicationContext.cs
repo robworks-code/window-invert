@@ -1,3 +1,4 @@
+using WindowInvert.Core.Geometry;
 using WindowInvert.Core.InvertState;
 using WindowInvert.Core.WindowTracking;
 using WindowInvert.Native;
@@ -13,6 +14,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly InvertedWindowSet _invertedWindows = new();
     private readonly WinEventHookListener _hook = new();
     private readonly Dictionary<nint, InvertOverlayWindow> _overlays = new();
+    private readonly Dictionary<nint, TitleBarButtonWindow> _titleBarButtons = new();
 
     public TrayApplicationContext()
     {
@@ -32,13 +34,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
         };
 
-        _registry.WindowTracked += _ => RebuildWindowsMenu();
+        _registry.WindowTracked += info =>
+        {
+            var button = new TitleBarButtonWindow(info.Rect, () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
+            button.Show();
+            _titleBarButtons[info.Hwnd] = button;
+
+            RebuildWindowsMenu();
+        };
         _registry.WindowUntracked += hwnd =>
         {
             _invertedWindows.Remove(hwnd);
             if (_overlays.Remove(hwnd, out var overlay))
             {
                 overlay.Destroy();
+            }
+            if (_titleBarButtons.Remove(hwnd, out var button))
+            {
+                button.Destroy();
             }
             RebuildWindowsMenu();
         };
@@ -49,6 +62,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 overlay.Reposition(info.Rect);
             }
+
+            if (_titleBarButtons.TryGetValue(info.Hwnd, out var button))
+            {
+                button.Reposition(info.Rect);
+            }
         };
 
         _registry.WindowVisibilityChanged += info =>
@@ -57,6 +75,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 if (info.IsMinimized) overlay.Hide();
                 else overlay.Show();
+            }
+
+            if (_titleBarButtons.TryGetValue(info.Hwnd, out var button))
+            {
+                if (info.IsMinimized) button.Hide();
+                else button.Show();
             }
         };
 
@@ -79,6 +103,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 api.GetRect(hwnd)));
 
         _registry.Bootstrap(initial);
+
+        foreach (var info in _registry.TrackedWindows.Values)
+        {
+            var button = new TitleBarButtonWindow(info.Rect, () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
+            button.Show();
+            _titleBarButtons[info.Hwnd] = button;
+        }
+    }
+
+    private void ToggleInvert(nint hwnd, WindowRect currentRect)
+    {
+        var isNowInverted = _invertedWindows.Toggle(hwnd);
+
+        if (isNowInverted)
+        {
+            var overlay = new InvertOverlayWindow(currentRect);
+            overlay.Show();
+            _overlays[hwnd] = overlay;
+        }
+        else if (_overlays.Remove(hwnd, out var overlay))
+        {
+            overlay.Destroy();
+        }
+
+        if (_titleBarButtons.TryGetValue(hwnd, out var button))
+        {
+            button.SetToggledVisual(isNowInverted);
+        }
     }
 
     private void RebuildWindowsMenu()
@@ -95,19 +147,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             item.Click += (_, _) =>
             {
-                var isNowInverted = _invertedWindows.Toggle(info.Hwnd);
-                item.Checked = isNowInverted;
-
-                if (isNowInverted)
-                {
-                    var overlay = new InvertOverlayWindow(info.Rect);
-                    overlay.Show();
-                    _overlays[info.Hwnd] = overlay;
-                }
-                else if (_overlays.Remove(info.Hwnd, out var overlay))
-                {
-                    overlay.Destroy();
-                }
+                ToggleInvert(info.Hwnd, info.Rect);
+                item.Checked = _invertedWindows.IsInverted(info.Hwnd);
             };
 
             _windowsMenu.DropDownItems.Add(item);
