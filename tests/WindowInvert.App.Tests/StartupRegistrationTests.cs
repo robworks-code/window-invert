@@ -53,6 +53,36 @@ public sealed class StartupRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void Enable_WhenTheKeyAlreadyExists_TakesTheOpenSubKeyPath_AndStillWritesAREG_SZ()
+    {
+        // Every other test starts from a fresh GUID subkey, so only the
+        // CreateSubKey fallback ever ran - while in production the Run key always
+        // exists and the OpenSubKey path is the one that is actually taken.
+        StartupRegistration.Enable();
+
+        using (var firstKey = Registry.CurrentUser.OpenSubKey(_throwawayKeyPath, writable: false))
+        {
+            Assert.NotNull(firstKey);
+        }
+
+        StartupRegistration.Enable();
+
+        Assert.True(StartupRegistration.IsEnabled);
+
+        using var key = Registry.CurrentUser.OpenSubKey(_throwawayKeyPath, writable: false);
+        Assert.NotNull(key);
+        Assert.Equal(RegistryValueKind.String, key!.GetValueKind("WindowInvertTest"));
+
+        var value = key.GetValue("WindowInvertTest") as string;
+        Assert.False(string.IsNullOrEmpty(value));
+        Assert.StartsWith("\"", value);
+        Assert.EndsWith("\"", value);
+
+        // Exactly one value, not a duplicate written alongside the first.
+        Assert.Equal(new[] { "WindowInvertTest" }, key.GetValueNames());
+    }
+
+    [Fact]
     public void Disable_AfterEnable_RemovesValue_AndIsEnabledReturnsFalse()
     {
         StartupRegistration.Enable();

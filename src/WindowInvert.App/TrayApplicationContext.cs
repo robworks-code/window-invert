@@ -65,15 +65,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         startupItem.Click += (_, _) =>
         {
-            if (startupItem.Checked)
+            // Writing the HKCU Run key can fail - group policy, the key being
+            // deleted concurrently, security software holding it open - and an
+            // exception escaping a WinForms click handler puts an
+            // unhandled-exception dialog on screen. Same reasoning as ToggleInvert
+            // a few lines below, which already wraps its fallible call.
+            //
+            // Checked is left untouched on failure: it still holds the last known
+            // good state, so the menu keeps matching what is actually registered
+            // rather than claiming a change that did not happen.
+            try
             {
-                StartupRegistration.Disable();
+                if (startupItem.Checked)
+                {
+                    StartupRegistration.Disable();
+                }
+                else
+                {
+                    StartupRegistration.Enable();
+                }
+
+                startupItem.Checked = StartupRegistration.IsEnabled;
             }
-            else
+            catch (Exception ex)
             {
-                StartupRegistration.Enable();
+                Debug.WriteLine($"Changing the start-with-Windows registration failed: {ex}");
             }
-            startupItem.Checked = StartupRegistration.IsEnabled;
         };
         _menu.Items.Add(startupItem);
 

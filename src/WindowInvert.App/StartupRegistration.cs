@@ -41,8 +41,14 @@ internal static class StartupRegistration
         // containing spaces (e.g. an install under "C:\Program Files\...") is
         // ambiguous. Quote it, matching how every other Run-key writer on Windows
         // does this.
+        //
+        // The value kind is stated rather than inferred. SetValue's two-argument
+        // overload picks a kind from the object's runtime type, which happens to
+        // give REG_SZ for a string today - but the Run key only accepts REG_SZ and
+        // REG_EXPAND_SZ, and a silently different kind would be a logon-time
+        // failure with nothing to see at write time.
         var path = Environment.ProcessPath ?? Application.ExecutablePath;
-        key.SetValue(ValueName, $"\"{path}\"");
+        key.SetValue(ValueName, $"\"{path}\"", RegistryValueKind.String);
     }
 
     public static void Disable()
