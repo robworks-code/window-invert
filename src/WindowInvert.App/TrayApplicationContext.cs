@@ -24,6 +24,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu = new ContextMenuStrip();
         _menu.Items.Add(_windowsMenu);
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Pick a window...", null, (_, _) =>
+        {
+            var picker = new WindowPickerOverlay(hwnd =>
+            {
+                if (_registry.TrackedWindows.TryGetValue(hwnd, out var info))
+                {
+                    ToggleInvert(hwnd, _registry.TrackedWindows[hwnd].Rect);
+                    RebuildWindowsMenu();
+                }
+            });
+            picker.Show();
+        });
         _menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
         _trayIcon = new NotifyIcon
