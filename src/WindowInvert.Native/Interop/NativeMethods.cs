@@ -60,6 +60,24 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern nint GetWindow(nint hWnd, uint uCmd);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    public static extern int GetWindowLong(nint hWnd, int nIndex);
+
+    /// <summary>
+    /// The DPI a window is being rendered at, per its own DPI awareness. Only a
+    /// fallback here - see <c>DisplayScaling</c> for why the monitor's effective
+    /// DPI is the right number for measuring another process's caption buttons.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern nint MonitorFromWindow(nint hWnd, uint dwFlags);
+
+    /// <summary>Returns an HRESULT, so callers must compare against <c>S_OK</c> (0).</summary>
+    [DllImport("shcore.dll")]
+    public static extern int GetDpiForMonitor(nint hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
     /// <summary>
     /// Note <c>hWndInsertAfter</c>: it is the window that must <i>precede</i>
     /// <paramref name="hWnd"/> in the z-order, so <paramref name="hWnd"/> ends up
@@ -91,6 +109,23 @@ internal static class NativeMethods
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
+
+    public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_TOPMOST = 0x00000008;
+
+    /// <summary>
+    /// <c>HWND_TOPMOST</c>. Windows keeps every topmost window above every
+    /// non-topmost one, so this is band membership, not merely a position.
+    /// </summary>
+    public static readonly nint HWND_TOPMOST = new(-1);
+
+    /// <summary><c>HWND_NOTOPMOST</c>: leave the topmost band, clearing the style.</summary>
+    public static readonly nint HWND_NOTOPMOST = new(-2);
+
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    /// <summary><c>MDT_EFFECTIVE_DPI</c>: the monitor's DPI including the user's scale setting.</summary>
+    public const int MDT_EFFECTIVE_DPI = 0;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 

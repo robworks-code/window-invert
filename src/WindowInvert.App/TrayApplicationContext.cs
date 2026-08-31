@@ -45,6 +45,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// </summary>
     private bool _failureReported;
 
+    /// <summary>
+    /// Set when a rebuild of the Windows submenu was skipped because the submenu
+    /// was open, and flushed when it closes.
+    /// </summary>
+    private bool _windowsMenuNeedsRebuild;
+
     public TrayApplicationContext()
     {
         // Forces the handle onto this thread, which is the UI thread. Without a
@@ -54,6 +60,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _registry = new WindowRegistry(new Win32WindowApi());
 
         _windowsMenu = new ToolStripMenuItem("Windows");
+        _windowsMenu.DropDownClosed += (_, _) =>
+        {
+            if (_windowsMenuNeedsRebuild)
+            {
+                RebuildWindowsMenu();
+            }
+        };
         _menu = new ContextMenuStrip();
         _menu.Items.Add(_windowsMenu);
         _menu.Items.Add(new ToolStripSeparator());
@@ -170,7 +183,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // not cross a process boundary, so Windows will not carry them along. This
         // is where they are put back. The event was previously plumbed all the way
         // to the registry and then discarded.
-        _registry.WindowForegroundChanged += RestackWindow;
+        _registry.WindowForegroundChanged += RestackAfterForegroundChange;
 
         _registry.WindowVisibilityChanged += info =>
         {
@@ -245,6 +258,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         var button = new TitleBarButtonWindow(
+            info.Hwnd,
             info.Rect,
             () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
         button.SetToggledVisual(_invertedWindows.IsInverted(info.Hwnd));
@@ -264,9 +278,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// it is inverting, where nothing would ever be visible. Measured, not assumed.
     /// </para>
     /// <para>
+    /// Band membership is settled first and the anchor read afterwards, because
+    /// moving a window into or out of the topmost band changes what is above the
+    /// source. Windows keeps every topmost window above every non-topmost one, so a
+    /// pinned source can only be covered by an overlay that is pinned with it. See
+    /// <see cref="WindowStacking.MatchBand"/> for why this is stated explicitly even
+    /// though the ordering pass alone was measured to achieve it.
+    /// </para>
+    /// <para>
     /// Cheap enough to call on every foreground change and every geometry change:
-    /// it is at most two <c>SetWindowPos</c> calls, and none at all for a window
-    /// with neither surface.
+    /// at most two <c>SetWindowPos</c> calls in the steady state, none at all for a
+    /// window with neither surface, and the band calls are skipped when the band is
+    /// already right.
     /// </para>
     /// </summary>
     private void RestackWindow(nint sourceHwnd)
@@ -279,11 +302,73 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // One retry, because every input here can go stale between reading it and
+        // acting on it: the anchor can be destroyed, and the source's band can
+        // change. A half-applied plan is worse than either - the button moves and
+        // the overlay does not, which can leave the overlay below the source.
+        if (!TryRestack(sourceHwnd, overlayHandle, buttonHandle))
+        {
+            TryRestack(sourceHwnd, overlayHandle, buttonHandle);
+        }
+    }
+
+    /// <summary>
+    /// One attempt at the restack. Returns false if any step failed, in which case
+    /// the z-order may be half-applied and the whole sequence should be retried
+    /// from a freshly read anchor.
+    /// </summary>
+    private static bool TryRestack(nint sourceHwnd, nint overlayHandle, nint buttonHandle)
+    {
+        var sourceIsTopmost = WindowStacking.IsTopmost(sourceHwnd);
+        WindowStacking.MatchBand(overlayHandle, sourceIsTopmost);
+        WindowStacking.MatchBand(buttonHandle, sourceIsTopmost);
+
+        // Read after the band changes, not before: moving a window into or out of
+        // the topmost band changes what is above the source.
         var anchor = WindowStacking.GetWindowAbove(sourceHwnd);
 
         foreach (var placement in OverlayStacking.PlanRestack(anchor, overlayHandle, buttonHandle))
         {
-            WindowStacking.InsertBelow(placement.Hwnd, placement.PlaceBelow);
+            if (!WindowStacking.InsertBelow(placement.Hwnd, placement.PlaceBelow))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Re-asserts the z-order of every window that currently has an overlay, plus
+    /// the window that just came to the foreground.
+    /// <para>
+    /// Restacking only the reported hwnd is not enough, because the foreground
+    /// event names the window that was activated and that need not be the window
+    /// that got raised. Activating a dialog raises the window that owns it, and the
+    /// dialog itself is never tracked - owned windows are exactly what the tracking
+    /// predicate excludes - so nothing would restack the owner and its overlay
+    /// would stay buried until the user next clicked or moved the window itself.
+    /// That is not the brief activation flash; it persists.
+    /// </para>
+    /// <para>
+    /// Sweeping every inverted window is correct whatever the activation grouping
+    /// rules turn out to be, and costs nothing: there are typically one to three
+    /// inverted windows, at two <c>SetWindowPos</c> calls each. The foreground
+    /// window is included even when it is not inverted, so its toggle button is
+    /// re-asserted too. Order does not matter - each window's stack reads its own
+    /// anchor when it is applied.
+    /// </para>
+    /// </summary>
+    private void RestackAfterForegroundChange(nint foregroundHwnd)
+    {
+        RestackWindow(foregroundHwnd);
+
+        foreach (var hwnd in _overlays.Keys.ToArray())
+        {
+            if (hwnd != foregroundHwnd)
+            {
+                RestackWindow(hwnd);
+            }
         }
     }
 
@@ -446,8 +531,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Rebuilds the Windows submenu, unless the user is looking at it.
+    /// <para>
+    /// Title changes have to rebuild this menu - that is how a window that named
+    /// itself late gets an entry - but they are high-frequency for exactly the
+    /// applications this app is used on: a download percentage, a media player's
+    /// elapsed-time caption, a build progress count. Since the rebuild opens by
+    /// clearing every item, one arriving while the submenu is open would delete and
+    /// recreate the entries under the pointer. Someone navigating that list through
+    /// a magnified viewport would have the item they were aiming at disappear
+    /// mid-reach.
+    /// </para>
+    /// <para>
+    /// A click on an item fires after the drop-down has closed, so a rebuild caused
+    /// by toggling a window still runs immediately; only a rebuild arriving while
+    /// the list is being browsed is deferred.
+    /// </para>
+    /// </summary>
     private void RebuildWindowsMenu()
     {
+        if (_windowsMenu.HasDropDownItems && _windowsMenu.DropDown.Visible)
+        {
+            _windowsMenuNeedsRebuild = true;
+            return;
+        }
+
+        _windowsMenuNeedsRebuild = false;
         _windowsMenu.DropDownItems.Clear();
 
         // Untitled windows are tracked but not listed - a menu full of blank

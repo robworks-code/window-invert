@@ -64,13 +64,18 @@ public class OverlayStackingTests
     }
 
     [Fact]
-    public void PlanRestack_AnchorIsTheButtonItself_EmitsNoSelfInsert()
+    public void PlanRestack_AnchorIsTheButtonItself_EmitsOnlyTheOverlayMove()
     {
         const nint source = 4000;
 
         var moves = OverlayStacking.PlanRestack(Button, Overlay, Button);
 
-        Assert.DoesNotContain(moves, m => m.Hwnd == m.PlaceBelow);
+        // The exact move list, not just "contains no self-insert" and the resulting
+        // order: this case starts from the order it is supposed to end in, so both
+        // of those weaker assertions are satisfied by a plan that does nothing at
+        // all. The overlay move is the one thing that must be there - the button is
+        // already where it belongs, the overlay may not be.
+        Assert.Equal(new[] { new StackPlacement(Overlay, Button) }, moves);
         Assert.Equal(new nint[] { Button, Overlay, source }, Apply(moves, Button, Overlay, source));
     }
 

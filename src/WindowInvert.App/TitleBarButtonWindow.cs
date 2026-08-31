@@ -5,7 +5,6 @@ namespace WindowInvert.App;
 
 internal sealed class TitleBarButtonWindow : NativeWindow
 {
-    private const int ButtonSize = 20;
     private const int WS_POPUP = unchecked((int)0x80000000);
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
@@ -24,12 +23,23 @@ internal sealed class TitleBarButtonWindow : NativeWindow
     private static extern bool ValidateRect(nint hWnd, nint lpRect);
 
     private readonly Action _onClicked;
+
+    /// <summary>
+    /// Kept so the button can re-read the display scale on every reposition - a
+    /// window dragged between monitors of different scales changes how wide its own
+    /// caption buttons are, in the physical pixels this button is placed in.
+    /// </summary>
+    private readonly nint _sourceHwnd;
+
     private bool _isToggled;
 
-    public TitleBarButtonWindow(WindowRect sourceRect, Action onClicked)
+    public TitleBarButtonWindow(nint sourceHwnd, WindowRect sourceRect, Action onClicked)
     {
         _onClicked = onClicked;
-        var buttonRect = OverlayGeometry.ComputeTitleBarButtonRect(sourceRect, ButtonSize);
+        _sourceHwnd = sourceHwnd;
+        var buttonRect = OverlayGeometry.ComputeTitleBarButtonRect(
+            sourceRect,
+            Native.DisplayScaling.GetEffectiveDpi(sourceHwnd));
 
         var cp = new CreateParams
         {
@@ -59,7 +69,9 @@ internal sealed class TitleBarButtonWindow : NativeWindow
     /// </summary>
     public void Reposition(WindowRect sourceRect)
     {
-        var buttonRect = OverlayGeometry.ComputeTitleBarButtonRect(sourceRect, ButtonSize);
+        var buttonRect = OverlayGeometry.ComputeTitleBarButtonRect(
+            sourceRect,
+            Native.DisplayScaling.GetEffectiveDpi(_sourceHwnd));
         Native.WindowStacking.MoveTo(Handle, buttonRect.X, buttonRect.Y, buttonRect.Width, buttonRect.Height);
     }
 
