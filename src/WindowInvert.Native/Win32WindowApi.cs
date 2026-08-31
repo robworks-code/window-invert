@@ -52,6 +52,38 @@ public sealed class Win32WindowApi : IWin32WindowApi
 
     public bool IsVisible(nint hwnd) => NativeMethods.IsWindowVisible(hwnd);
 
+    public bool IsTopLevel(nint hwnd) => IsTopLevelWindow(hwnd);
+
+    /// <summary>
+    /// The single definition of "a window this app will put an overlay on":
+    /// its own <c>GA_ROOT</c> ancestor, and no owner.
+    /// <para>
+    /// <c>GA_ROOT</c> rejects child windows - a child's root is its top-level
+    /// parent, never itself. <c>GW_OWNER</c> rejects tooltips, menu popups,
+    /// combobox drop lists and dialogs, which are top-level by
+    /// <c>GA_ROOT</c> but are owned by the window they belong to.
+    /// </para>
+    /// <para>
+    /// Deliberately shared by <see cref="WindowEnumerator"/> (the startup path) and
+    /// by <c>WindowRegistry</c> through <see cref="IsTopLevel"/> (the live path).
+    /// The two used to disagree - the startup path filtered properly while the live
+    /// path accepted anything visible - so hovering anything with a tooltip added a
+    /// tracked "window", a floating toggle button and a blank tray-menu entry, then
+    /// removed them again a moment later.
+    /// </para>
+    /// <para>
+    /// Visibility is checked separately by each caller, and a title is deliberately
+    /// <b>not</b> required here: many applications raise their show notification
+    /// before calling <c>SetWindowText</c>, so requiring a title at this point would
+    /// permanently miss real windows. The title is a display concern, evaluated
+    /// live where the tray menu and the toggle button are built.
+    /// </para>
+    /// </summary>
+    internal static bool IsTopLevelWindow(nint hwnd) =>
+        hwnd != 0
+        && NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT) == hwnd
+        && NativeMethods.GetWindow(hwnd, NativeMethods.GW_OWNER) == 0;
+
     public string GetTitle(nint hwnd)
     {
         var length = NativeMethods.GetWindowTextLength(hwnd);

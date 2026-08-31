@@ -83,6 +83,17 @@ internal static class NativeMethods
     public const uint EVENT_OBJECT_SHOW = 0x8002;
     public const uint EVENT_OBJECT_HIDE = 0x8003;
     public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
-    public const uint EVENT_MIN = 0x0001;
-    public const uint EVENT_MAX = 0x7FFFFFFF;
+    public const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+
+    /// <summary>
+    /// <c>OBJID_WINDOW</c>. The accessible object that <i>is</i> the window, as
+    /// opposed to a child element inside it. It says nothing about whether the
+    /// window is top-level - a tooltip, a menu popup and a child window all raise
+    /// events with this object id - so it is a necessary filter, not a sufficient
+    /// one.
+    /// </summary>
+    public const int OBJID_WINDOW = 0;
+
+    /// <summary><c>CHILDID_SELF</c>: the object itself rather than an element of it.</summary>
+    public const int CHILDID_SELF = 0;
 }

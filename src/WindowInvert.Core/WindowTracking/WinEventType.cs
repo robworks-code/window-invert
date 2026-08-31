@@ -9,4 +9,5 @@ public enum WinEventType
     ForegroundChange,
     MinimizeStart,
     MinimizeEnd,
+    NameChange,
 }

@@ -71,10 +71,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _registry.WindowTracked += info =>
         {
-            var button = new TitleBarButtonWindow(info.Rect, () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
-            button.Show();
-            _titleBarButtons[info.Hwnd] = button;
-
+            EnsureTitleBarButton(info);
+            RebuildWindowsMenu();
+        };
+        _registry.WindowTitleChanged += info =>
+        {
+            // A window that showed itself before naming itself becomes displayable
+            // here: this is where it gets its toggle button and its menu entry.
+            EnsureTitleBarButton(info);
             RebuildWindowsMenu();
         };
         _registry.WindowUntracked += hwnd =>
@@ -141,10 +145,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         foreach (var info in _registry.TrackedWindows.Values)
         {
-            var button = new TitleBarButtonWindow(info.Rect, () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
-            button.Show();
-            _titleBarButtons[info.Hwnd] = button;
+            EnsureTitleBarButton(info);
         }
+    }
+
+    /// <summary>
+    /// Gives <paramref name="info"/> a floating toggle button if it deserves one
+    /// and has not got one already.
+    /// <para>
+    /// The title is the gate, and it is read live rather than from whatever was
+    /// cached when the window was first tracked, because windows routinely appear
+    /// before they are named. An untitled window is tracked - it just has no
+    /// affordance yet.
+    /// </para>
+    /// <para>
+    /// A button is never removed here. A window that loses its title (some
+    /// applications clear and reset it) keeps the button it already has, so an
+    /// inverted window can always be switched back off.
+    /// </para>
+    /// </summary>
+    private void EnsureTitleBarButton(WindowInfo info)
+    {
+        if (string.IsNullOrWhiteSpace(info.Title) || _titleBarButtons.ContainsKey(info.Hwnd))
+        {
+            return;
+        }
+
+        var button = new TitleBarButtonWindow(
+            info.Rect,
+            () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
+        button.SetToggledVisual(_invertedWindows.IsInverted(info.Hwnd));
+        button.Show();
+        _titleBarButtons[info.Hwnd] = button;
     }
 
     private void ToggleInvert(nint hwnd, WindowRect currentRect)
@@ -194,9 +226,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _windowsMenu.DropDownItems.Clear();
 
-        foreach (var info in _registry.TrackedWindows.Values.OrderBy(w => w.Title))
+        // Untitled windows are tracked but not listed - a menu full of blank
+        // entries is worse than a short menu. The one exception is a window that is
+        // currently inverted: it has to stay reachable so it can be switched back
+        // off, even if it never had a title (the click-to-pick path can invert one).
+        var listed = _registry.TrackedWindows.Values
+            .Where(w => !string.IsNullOrWhiteSpace(w.Title) || _invertedWindows.IsInverted(w.Hwnd))
+            .OrderBy(w => w.Title, StringComparer.CurrentCultureIgnoreCase);
+
+        foreach (var info in listed)
         {
-            var item = new ToolStripMenuItem(info.Title)
+            var label = string.IsNullOrWhiteSpace(info.Title)
+                ? $"(untitled window 0x{info.Hwnd:X})"
+                : info.Title;
+
+            var item = new ToolStripMenuItem(label)
             {
                 Checked = _invertedWindows.IsInverted(info.Hwnd),
                 CheckOnClick = false,
