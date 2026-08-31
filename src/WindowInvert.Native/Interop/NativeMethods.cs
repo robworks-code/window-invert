@@ -67,6 +67,15 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
     public static extern int DwmGetWindowAttributeInt(nint hWnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
+    /// <summary>
+    /// Returns the number of characters copied, or 0 on failure. The name a
+    /// window class was registered under is the only thing that distinguishes
+    /// the desktop, the taskbar and the magnifier from an application window -
+    /// see <c>NonApplicationWindowClasses</c>.
+    /// </summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(nint hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowTextLength(nint hWnd);
 

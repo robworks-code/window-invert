@@ -56,7 +56,8 @@ public sealed class Win32WindowApi : IWin32WindowApi
 
     /// <summary>
     /// The single definition of "a window this app will put an overlay on":
-    /// its own <c>GA_ROOT</c> ancestor, no owner, and not cloaked.
+    /// its own <c>GA_ROOT</c> ancestor, no owner, not cloaked, and not one of
+    /// the desktop shell's or the accessibility stack's own windows.
     /// <para>
     /// <c>GA_ROOT</c> rejects child windows - a child's root is its top-level
     /// parent, never itself. <c>GW_OWNER</c> rejects tooltips, menu popups,
@@ -92,7 +93,33 @@ public sealed class Win32WindowApi : IWin32WindowApi
         hwnd != 0
         && NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT) == hwnd
         && NativeMethods.GetWindow(hwnd, NativeMethods.GW_OWNER) == 0
-        && !IsCloaked(hwnd);
+        && !IsCloaked(hwnd)
+        && !IsNonApplicationClass(hwnd);
+
+    /// <summary>
+    /// Whether this is a shell or accessibility surface rather than an
+    /// application window - see
+    /// <see cref="NonApplicationWindowClasses"/> for which, and why each.
+    /// <para>
+    /// Enumerating a live desktop with the rest of the predicate applied showed
+    /// four such windows passing it: the desktop, both taskbars, and the
+    /// magnifier. The first three are the ones a user reaches by clicking
+    /// something that is plainly not a window; the magnifier was worse, because
+    /// it is titled and so was offered in the tray menu as a normal choice.
+    /// </para>
+    /// <para>
+    /// Open on failure, for the same reason as <see cref="IsCloaked"/>: a class
+    /// name that cannot be read leaves the window eligible.
+    /// </para>
+    /// </summary>
+    private static bool IsNonApplicationClass(nint hwnd)
+    {
+        // Long enough for any real class name; the API truncates rather than
+        // failing, and a truncated name simply will not match the list.
+        var buffer = new StringBuilder(256);
+        return NativeMethods.GetClassName(hwnd, buffer, buffer.Capacity) > 0
+            && NonApplicationWindowClasses.IsNonApplicationWindow(buffer.ToString());
+    }
 
     /// <summary>
     /// Whether DWM has stopped compositing this window.
