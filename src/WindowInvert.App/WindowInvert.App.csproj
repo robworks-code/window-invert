@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\WindowInvert.Core\WindowInvert.Core.csproj" />
+    <ProjectReference Include="..\WindowInvert.Native\WindowInvert.Native.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="WindowInvert.App.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      ApplicationConfiguration.Initialize() defaults to HighDpiMode.SystemAware,
+      which is wrong for this application by construction rather than by accident.
+      Under SystemAware, GetClientRect - which sizes the swap chain - returns
+      DPI-virtualized coordinates on any monitor whose scale differs from the
+      system scale, while DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) -
+      which sizes and places the overlay - returns physical pixels regardless of
+      the caller's awareness. On the primary monitor the virtualization is the
+      identity and the two agree, which is why every measurement taken there
+      passed. Off it they diverge, Windows bitmap-stretches the overlay on top,
+      and the result is a resampled, softened overlay - precisely the defect the
+      extended-frame-bounds work removed on the primary monitor, reintroduced by
+      the window being on a different screen.
+
+      PerMonitorV2 makes both APIs report the same physical pixels everywhere.
+      Confirming the behaviour needs a live multi-monitor session; this setting is
+      what makes such a check mean anything.
+    -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+</Project>

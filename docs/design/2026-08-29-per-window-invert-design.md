@@ -81,17 +81,33 @@ without needing to touch capture or window-tracking code.
 
 ### 4. Overlay Window Manager
 
-One borderless, always-on-top, layered overlay HWND per inverted
-window, created with `WS_EX_LAYERED | WS_EX_TRANSPARENT |
-WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, positioned and sized to exactly
-match its source window's screen rectangle. `WS_EX_TRANSPARENT` makes
-it click-through, so mouse and keyboard input pass straight to the
-real window underneath - the overlay is a pure visual layer, never an
-input target.
+One borderless, layered overlay HWND per inverted window, created with
+`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+WS_EX_NOACTIVATE`, positioned and sized to exactly match its source
+window's screen rectangle. `WS_EX_TRANSPARENT` makes it click-through,
+so mouse and keyboard input pass straight to the real window
+underneath - the overlay is a pure visual layer, never an input
+target.
+
+Each overlay is stacked **directly above its own source window**, not
+in the always-on-top band. An overlay in the topmost band would paint
+a rectangle of one window's inverted content over every unrelated
+window on the screen, and since it is click-through the user could
+read one window while typing into another - which contradicts the
+whole premise of inverting one window without affecting the rest of
+the screen. Stacked against its source instead, the overlay is
+occluded exactly when its source is. It follows the source's z-order
+band, so a source the user has pinned always-on-top keeps a working
+overlay.
 
 The manager keeps each overlay in lockstep with Window Registry
 events: move/resize -> reposition, minimize -> hide, restore -> show,
-close -> destroy overlay and tear down its capture session.
+close -> destroy overlay and tear down its capture session. Because
+the overlay cannot be *owned* by its source - window ownership does
+not cross a process boundary - Windows will not carry it along when
+the source is raised, so the stacking is re-asserted on foreground
+change, geometry change, restore, and immediately after the overlay is
+created.
 
 ### 5. Multi-Window State
 
@@ -108,14 +124,19 @@ independently and don't block each other.
 - **Click-to-pick mode**: cursor becomes a crosshair; the next window
   clicked (resolved via `WindowFromPoint` + `GetAncestor` to the
   top-level owner) toggles invert for that window.
-- **Floating title-bar button**: a small always-on-top button rendered
-  near each trackable window's own minimize/maximize/close controls,
-  offset so it doesn't collide with them, toggling invert for that
-  window with one click. Reuses the same tracking/positioning
-  mechanism as the invert overlay itself (component 4), just drawing a
-  button instead of inverted pixels. This is the practical substitute
-  for taskbar-menu integration, which Windows does not allow
-  third-party apps to provide.
+- **Floating title-bar button**: a small button rendered near each
+  trackable window's own minimize/maximize/close controls, offset so
+  it doesn't collide with them, toggling invert for that window with
+  one click. Its offset and size scale with the display's DPI, since
+  the caption buttons it avoids are drawn at the display's scale.
+  Stacked **directly above its own window's overlay** - and so above
+  the window itself - by the same mechanism as the overlay
+  (component 4), rather than in the always-on-top band; that ordering
+  is what keeps it visible after toggling invert on, and keeps it
+  occluded along with the window it belongs to. Only windows that
+  currently have a title get one. This is the practical substitute for
+  taskbar-menu integration, which Windows does not allow third-party
+  apps to provide.
 
 ## Data Flow
 

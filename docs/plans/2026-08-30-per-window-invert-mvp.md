@@ -1488,7 +1488,16 @@ _registry.WindowUntracked += hwnd =>
 };
 ```
 
-Also update `BootstrapRegistry`'s initial population path: after `_registry.Bootstrap(initial)`, loop over `_registry.TrackedWindows.Values` and create a `TitleBarButtonWindow` for each (bootstrapped windows don't fire `WindowTracked`, matching Task 3's `Bootstrap` contract).
+Bootstrapped windows don't fire `WindowTracked` (matching Task 3's `Bootstrap` contract), so `BootstrapRegistry` must create their title-bar buttons itself. Add this at the end of `BootstrapRegistry`, after the existing `_registry.Bootstrap(initial);` line:
+
+```csharp
+foreach (var info in _registry.TrackedWindows.Values)
+{
+    var button = new TitleBarButtonWindow(info.Rect, () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
+    button.Show();
+    _titleBarButtons[info.Hwnd] = button;
+}
+```
 
 - [ ] **Step 3: Manually verify the title-bar button**
 
@@ -2023,7 +2032,7 @@ _captureEngine.Start(sourceHwnd);
 _renderer.AttachToOverlay(Handle, _captureEngine);
 ```
 
-This requires threading the original source window's `nint sourceHwnd` into `InvertOverlayWindow`'s constructor (it already receives the source's `WindowRect`; add `nint sourceHwnd` as a second parameter) and updating both call sites in `TrayApplicationContext.ToggleInvert` (`new InvertOverlayWindow(currentRect, hwnd)`).
+This requires threading the original source window's `nint sourceHwnd` into `InvertOverlayWindow`'s constructor (it already receives the source's `WindowRect`; add `nint sourceHwnd` as a second parameter) and updating its one call site, in `TrayApplicationContext.ToggleInvert` (`new InvertOverlayWindow(currentRect, hwnd)`) - Task 8 already consolidated overlay creation into that single method, so no other call site exists.
 
 Update `Destroy()` to also dispose the new fields:
 
