@@ -58,6 +58,22 @@ public static class WindowStacking
     }
 
     /// <summary>
+    /// The application window at the top of <paramref name="hwnd"/>'s owner chain,
+    /// or <paramref name="hwnd"/> itself when it owns nothing above it.
+    /// <para>
+    /// Needed because activation is a group operation. Clicking a modal dialog, a
+    /// find bar or a properties sheet raises the window that owns it as well as the
+    /// dialog, but the foreground notification names only the dialog - which this
+    /// app never tracks, owned windows being exactly what the tracking predicate
+    /// excludes. Without resolving the owner, the owner's toggle button is left
+    /// where it was and the window it belongs to is now in front of it, so the
+    /// button silently disappears until that window is moved or activated directly.
+    /// </para>
+    /// </summary>
+    public static nint GetOwnerRoot(nint hwnd) =>
+        hwnd == 0 ? 0 : NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOTOWNER);
+
+    /// <summary>
     /// Whether <paramref name="hwnd"/> is in the topmost z-order band.
     /// </summary>
     public static bool IsTopmost(nint hwnd) =>
