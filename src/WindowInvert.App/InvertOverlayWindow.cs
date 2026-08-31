@@ -26,7 +26,10 @@ internal sealed class InvertOverlayWindow : NativeWindow
     private static readonly nint HWND_TOPMOST = new(-1);
     private const uint SWP_NOACTIVATE = 0x0010;
 
-    public InvertOverlayWindow(WindowRect initial)
+    private readonly Native.CaptureEngine _captureEngine = new();
+    private readonly Native.InvertRenderer _renderer = new();
+
+    public InvertOverlayWindow(WindowRect initial, nint sourceHwnd)
     {
         var overlayRect = OverlayGeometry.ComputeOverlayRect(initial);
 
@@ -42,10 +45,22 @@ internal sealed class InvertOverlayWindow : NativeWindow
 
         CreateHandle(cp);
 
-        // Placeholder fill: semi-transparent so the underlying window is
-        // still visible beneath it while proving positioning/click-through
-        // ahead of the real invert pipeline (Task 11).
-        SetLayeredWindowAttributes(Handle, 0, 160, LWA_ALPHA);
+        // The placeholder's semi-transparency is gone - DirectComposition now
+        // supplies every pixel - but the call itself is kept, at a no-op alpha of
+        // 255. A layered window "will not become visible until
+        // SetLayeredWindowAttributes or UpdateLayeredWindow has been called for
+        // this window"; measured behaviour is that the DirectComposition layer is
+        // composed regardless, but that is not something the documentation
+        // promises, and the whole feature depends on this window being displayed.
+        // One call keeps it inside the documented guarantee.
+        //
+        // WS_EX_LAYERED itself stays because click-through depends on it:
+        // WS_EX_TRANSPARENT's hit-test pass-through is documented in terms of a
+        // layered window, and swapping in WS_EX_NOREDIRECTIONBITMAP - the usual
+        // style for a DirectComposition-only window - measurably breaks it
+        // (WindowFromPoint then returns the overlay instead of the window
+        // underneath). DirectComposition explicitly supports a layered target.
+        SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
 
         // Place into the topmost z-order band immediately on creation.
         // Without this, the overlay starts as an ordinary window and only
@@ -53,6 +68,12 @@ internal sealed class InvertOverlayWindow : NativeWindow
         // (via Reposition), so activating the source window right after
         // toggle-on would restack it above the overlay in the meantime.
         SetWindowPos(Handle, HWND_TOPMOST, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height, SWP_NOACTIVATE);
+
+        // Start capturing before attaching: the renderer builds its Direct2D
+        // device on the engine's D3D11 device, which only exists once the engine
+        // is running.
+        _captureEngine.Start(sourceHwnd);
+        _renderer.AttachToOverlay(Handle, _captureEngine);
     }
 
     public void Reposition(WindowRect sourceRect)
@@ -65,5 +86,16 @@ internal sealed class InvertOverlayWindow : NativeWindow
 
     public void Hide() => ShowWindow(Handle, SW_HIDE);
 
-    public void Destroy() => DestroyHandle();
+    public void Destroy()
+    {
+        // Capture first: CaptureEngine.Stop() blocks until any in-flight frame
+        // handler has returned, so the renderer is provably idle before its GPU
+        // resources go away. InvertRenderer also guards itself with its own lock,
+        // so the reverse order would be safe too - this is simply the order that
+        // never contends. The renderer must go before DestroyHandle, since its
+        // DirectComposition target is bound to this HWND.
+        _captureEngine.Dispose();
+        _renderer.Dispose();
+        DestroyHandle();
+    }
 }

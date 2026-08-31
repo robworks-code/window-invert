@@ -132,7 +132,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (isNowInverted)
         {
-            var overlay = new InvertOverlayWindow(currentRect);
+            var overlay = new InvertOverlayWindow(currentRect, hwnd);
             overlay.Show();
             _overlays[hwnd] = overlay;
         }
