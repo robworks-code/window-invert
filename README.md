@@ -93,3 +93,7 @@ Design notes are in `docs/design/`.
 This is the first working version. It builds clean and the
 tracking, state and stacking logic is unit tested, but it has
 not been through much real use yet.
+
+## License
+
+MIT. See `LICENSE`.
