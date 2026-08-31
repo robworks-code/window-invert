@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using WindowInvert.Core.Geometry;
 using WindowInvert.Core.InvertState;
+using WindowInvert.Core.Notifications;
 using WindowInvert.Core.Stacking;
 using WindowInvert.Core.WindowTracking;
 using WindowInvert.Native;
@@ -39,11 +40,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Control _uiMarshal = new();
 
     /// <summary>
-    /// Whether the user has already been told that something failed. One balloon
-    /// per session: a lost graphics device fails every overlay at once, and a queue
-    /// of identical notifications is noise, not information.
+    /// Rate-limits the failure balloon. Long enough that losing the graphics device
+    /// - which fails every overlay within milliseconds - produces one notification
+    /// rather than a queue of identical ones, and short enough that an unrelated
+    /// failure later in a session that may run for days still gets said out loud.
     /// </summary>
-    private bool _failureReported;
+    private readonly FailureNotificationThrottle _failureNotifications =
+        new(TimeSpan.FromMinutes(5));
 
     /// <summary>
     /// Set when a rebuild of the Windows submenu was skipped because the submenu
@@ -107,26 +110,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _menu.Items.Add(startupItem);
 
-        _menu.Items.Add("Pick a window...", null, (_, _) =>
-        {
-            // Held in a field, not a local: this object owns a native window
-            // procedure, and nothing else references it once Show() returns, so
-            // without a rooted reference the garbage collector is free to take it
-            // away while Windows is still calling into it.
-            _activePicker = new WindowPickerOverlay(
-                hwnd =>
-                {
-                    if (_registry.TrackedWindows.TryGetValue(hwnd, out var info))
-                    {
-                        ToggleInvert(hwnd, info.Rect);
-                        RebuildWindowsMenu();
-                    }
-
-                    _activePicker = null;
-                },
-                onCancelled: () => _activePicker = null);
-            _activePicker.Show();
-        });
+        _menu.Items.Add("Pick a window...", null, (_, _) => StartWindowPicker());
         _menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
         _trayIcon = new NotifyIcon
@@ -152,10 +136,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _registry.WindowUntracked += hwnd =>
         {
             _invertedWindows.Remove(hwnd);
-            if (_overlays.Remove(hwnd, out var overlay))
-            {
-                overlay.Destroy();
-            }
+            DestroyOverlay(hwnd);
             if (_titleBarButtons.Remove(hwnd, out var button))
             {
                 button.Destroy();
@@ -185,34 +166,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // to the registry and then discarded.
         _registry.WindowForegroundChanged += RestackAfterForegroundChange;
 
-        _registry.WindowVisibilityChanged += info =>
-        {
-            if (_overlays.TryGetValue(info.Hwnd, out var overlay))
-            {
-                if (info.IsMinimized) overlay.Hide();
-                else overlay.Show();
-            }
-
-            if (_titleBarButtons.TryGetValue(info.Hwnd, out var button))
-            {
-                if (info.IsMinimized) button.Hide();
-                else button.Show();
-            }
-
-            // Restoring usually activates the window too, and the foreground event
-            // would then repair the order - but not every restore activates, and
-            // showing a window puts it at the top of its band regardless. Same
-            // assertion, one more trigger point.
-            if (!info.IsMinimized)
-            {
-                RestackWindow(info.Hwnd);
-            }
-        };
+        _registry.WindowVisibilityChanged += HandleVisibilityChanged;
 
         _hook.WindowEvent += (type, hwnd) => _registry.HandleWinEvent(type, hwnd);
 
-        BootstrapRegistry();
+        // Hooks installed before the desktop is enumerated, deliberately. Delivery
+        // is out-of-context, so nothing arrives until the message loop runs, which
+        // is after this constructor returns - meaning a window that dies partway
+        // through the enumeration below still delivers its destroy notification
+        // afterwards and the stale entry is removed. Enumerating first left exactly
+        // that window tracked forever, with a toggle button floating over whatever
+        // took its place on screen. Destroy notifications for windows that were
+        // already gone name handles this registry never tracked, and are ignored.
         _hook.Start();
+        BootstrapRegistry();
         RebuildWindowsMenu();
     }
 
@@ -260,9 +227,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var button = new TitleBarButtonWindow(
             info.Hwnd,
             info.Rect,
-            () => ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect));
+            () => ToggleInvert(info.Hwnd));
         button.SetToggledVisual(_invertedWindows.IsInverted(info.Hwnd));
-        button.Show();
+
+        // Shown only if the window it belongs to is actually on screen. A minimized
+        // or hidden window is tracked and can acquire its button at any time - a
+        // late title arrives for one just as readily as for a visible window - and
+        // showing it unconditionally put a 20 px button over whatever really
+        // occupies that part of the screen now.
+        if (info.IsOnScreen)
+        {
+            button.Show();
+        }
+
         _titleBarButtons[info.Hwnd] = button;
         RestackWindow(info.Hwnd);
     }
@@ -351,95 +328,246 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Re-asserts the z-order of every window that currently has an overlay, plus
-    /// the window that just came to the foreground.
+    /// Re-asserts the z-order of the window that just came to the foreground, the
+    /// window that owns it, and every window that currently has an overlay.
     /// <para>
     /// Restacking only the reported hwnd is not enough, because the foreground
     /// event names the window that was activated and that need not be the window
     /// that got raised. Activating a dialog raises the window that owns it, and the
     /// dialog itself is never tracked - owned windows are exactly what the tracking
-    /// predicate excludes - so nothing would restack the owner and its overlay
+    /// predicate excludes - so nothing would restack the owner, and its surfaces
     /// would stay buried until the user next clicked or moved the window itself.
-    /// That is not the brief activation flash; it persists.
+    /// That is not the brief activation flash; it persists. Resolving the owner
+    /// answers that case exactly, in one <c>GetAncestor</c> call.
     /// </para>
     /// <para>
-    /// Sweeping every inverted window is correct whatever the activation grouping
-    /// rules turn out to be, and costs nothing: there are typically one to three
-    /// inverted windows, at two <c>SetWindowPos</c> calls each. The foreground
-    /// window is included even when it is not inverted, so its toggle button is
-    /// re-asserted too. Order does not matter - each window's stack reads its own
-    /// anchor when it is applied.
+    /// The owner walk is what covers toggle buttons, which are the far larger set -
+    /// nearly every window on the desktop has one, while only the inverted few have
+    /// an overlay. Sweeping all of them on every activation would cost dozens of
+    /// <c>SetWindowPos</c> calls for no reason: activation raises the activated
+    /// window and its owner group, and nothing else moves.
+    /// </para>
+    /// <para>
+    /// The overlay sweep stays as the belt-and-braces pass, and costs almost
+    /// nothing: there are typically one to three inverted windows, at two
+    /// <c>SetWindowPos</c> calls each. Order does not matter - each window's stack
+    /// reads its own anchor when it is applied.
     /// </para>
     /// </summary>
     private void RestackAfterForegroundChange(nint foregroundHwnd)
     {
         RestackWindow(foregroundHwnd);
 
+        var ownerRoot = WindowStacking.GetOwnerRoot(foregroundHwnd);
+        if (ownerRoot != 0 && ownerRoot != foregroundHwnd)
+        {
+            RestackWindow(ownerRoot);
+        }
+
         foreach (var hwnd in _overlays.Keys.ToArray())
         {
-            if (hwnd != foregroundHwnd)
+            if (hwnd != foregroundHwnd && hwnd != ownerRoot)
             {
                 RestackWindow(hwnd);
             }
         }
     }
 
-    private void ToggleInvert(nint hwnd, WindowRect currentRect)
+    /// <summary>
+    /// Follows a window on and off the screen - minimized, restored, hidden to a
+    /// notification area, or cloaked onto another virtual desktop and back.
+    /// <para>
+    /// The overlay is destroyed while the window is away rather than merely hidden,
+    /// and rebuilt when it returns. Hiding it would leave a capture session running
+    /// against a window that composes no frames, which both holds graphics resources
+    /// for nothing and invites the capture pipeline's own failure path to fire for a
+    /// window that is simply minimized - taking the user's invert setting off, with
+    /// a warning, for no real fault.
+    /// </para>
+    /// <para>
+    /// The inverted flag itself survives all of this. It records what the user
+    /// asked for, not what is currently on screen, so a window that comes back comes
+    /// back inverted.
+    /// </para>
+    /// </summary>
+    private void HandleVisibilityChanged(WindowInfo info)
     {
+        if (_titleBarButtons.TryGetValue(info.Hwnd, out var button))
+        {
+            if (info.IsOnScreen)
+            {
+                button.Show();
+            }
+            else
+            {
+                button.Hide();
+            }
+        }
+
+        if (!info.IsOnScreen)
+        {
+            DestroyOverlay(info.Hwnd);
+            RebuildWindowsMenu();
+            return;
+        }
+
+        if (_invertedWindows.IsInverted(info.Hwnd) && !TryShowOverlay(info.Hwnd, info.Rect))
+        {
+            // Rebuilding on return can fail exactly as creating it can, and here the
+            // user did nothing to prompt it - so unlike a toggle they clicked, there
+            // is nothing on screen that would explain a window coming back
+            // un-inverted. TryShowOverlay has already reported it; this clears the
+            // state so the menu and the button agree with what is actually rendered.
+            ClearInvert(info.Hwnd);
+        }
+
+        // Restoring usually activates the window too, and the foreground event
+        // would then repair the order - but not every restore activates, and
+        // showing a window puts it at the top of its band regardless. Same
+        // assertion, one more trigger point.
+        RestackWindow(info.Hwnd);
+        RebuildWindowsMenu();
+    }
+
+    /// <summary>
+    /// Turns inversion on or off for <paramref name="hwnd"/>, reading the window's
+    /// live geometry itself.
+    /// <para>
+    /// The rect is looked up here rather than passed in, and that is load-bearing
+    /// rather than tidiness. Every caller is a closure that outlives the window it
+    /// captured - a tray-menu item the user is still looking at, a floating toggle
+    /// button still on screen, a click-to-pick callback - and each one used to index
+    /// the tracked-window dictionary to build the argument. An entry removed between
+    /// the closure being created and the user clicking it therefore threw
+    /// <c>KeyNotFoundException</c> out of a WinForms click handler and put an
+    /// unhandled-exception dialog on screen. Owning the lookup means there is one
+    /// guard instead of three, and no way to add a fourth call site that skips it.
+    /// </para>
+    /// </summary>
+    private void ToggleInvert(nint hwnd)
+    {
+        if (!_registry.TrackedWindows.TryGetValue(hwnd, out var info))
+        {
+            // The window closed while its menu entry or toggle button was still on
+            // screen. Nothing to toggle, and the surfaces have already been torn
+            // down by the untracking path - just bring the menu back in line.
+            Debug.WriteLine($"Ignoring an invert toggle for untracked window 0x{hwnd:X}.");
+            RebuildWindowsMenu();
+            return;
+        }
+
         var isNowInverted = _invertedWindows.Toggle(hwnd);
 
-        if (isNowInverted)
+        if (!isNowInverted)
         {
-            InvertOverlayWindow overlay = null!;
-
-            try
-            {
-                // The failure callback closes over the very variable being assigned,
-                // because a frame can fail before the constructor returns. That is
-                // safe: the callback only posts, and the posted work runs on the UI
-                // thread after this method has either completed the assignment or
-                // rolled the toggle back - and in the rollback case it finds no
-                // overlay registered for this window and does nothing.
-                overlay = new InvertOverlayWindow(
-                    currentRect,
-                    hwnd,
-                    error => PostToUi(() => HandleOverlayFailure(hwnd, overlay, error)));
-            }
-            catch (Exception ex)
-            {
-                // Building the overlay can fail for reasons that are transient or
-                // specific to one window - capture unsupported, the source window
-                // closing mid-toggle, a graphics device that would not create. The
-                // constructor releases whatever it acquired, so the only thing left
-                // to undo is this method's own state change. Rolling it back keeps
-                // the tray menu and the title-bar button matching reality and lets
-                // the user simply try again; leaving it set would show the window as
-                // inverted forever with no overlay and no way to clear it, and
-                // letting the exception escape a WinForms click handler would put an
-                // unhandled-exception dialog on screen.
-                _invertedWindows.Remove(hwnd);
-                Debug.WriteLine($"Toggling invert on 0x{hwnd:X} failed: {ex}");
-                return;
-            }
-
-            overlay.Show();
-            _overlays[hwnd] = overlay;
-
-            // Straight away, not only on the next move or resize. The overlay was
-            // created after the toggle button, so without this the button spends the
-            // interval buried under the overlay it just produced - and the button's
-            // toggled colour is the only on-screen confirmation that invert is on.
-            RestackWindow(hwnd);
+            DestroyOverlay(hwnd);
         }
-        else if (_overlays.Remove(hwnd, out var overlay))
+        else if (info.IsOnScreen && !TryShowOverlay(hwnd, info.Rect))
         {
-            overlay.Destroy();
+            // Rolling the toggle back keeps the tray menu and the button matching
+            // reality and lets the user simply try again; leaving it set would show
+            // the window as inverted forever with no overlay behind the claim.
+            _invertedWindows.Remove(hwnd);
+            isNowInverted = false;
         }
+
+        // An off-screen window keeps the flag with no overlay behind it. That is the
+        // whole point of separating the two: the overlay is built when the window
+        // comes back, by HandleVisibilityChanged. Creating one now would put a
+        // frozen, blank inverted rectangle over whatever really occupies the
+        // window's last known position.
 
         if (_titleBarButtons.TryGetValue(hwnd, out var button))
         {
             button.SetToggledVisual(isNowInverted);
         }
+    }
+
+    /// <summary>
+    /// Builds and shows the invert overlay for <paramref name="hwnd"/>, reporting
+    /// failure rather than throwing. Returns whether an overlay is in place
+    /// afterwards - including when one already was.
+    /// </summary>
+    private bool TryShowOverlay(nint hwnd, WindowRect rect)
+    {
+        if (_overlays.ContainsKey(hwnd))
+        {
+            return true;
+        }
+
+        InvertOverlayWindow overlay = null!;
+
+        try
+        {
+            // The failure callback closes over the very variable being assigned,
+            // because a frame can fail before the constructor returns. That is
+            // safe: the callback only posts, and the posted work runs on the UI
+            // thread after this method has either completed the assignment or
+            // returned - and in the failure case it finds no overlay registered for
+            // this window and does nothing.
+            overlay = new InvertOverlayWindow(
+                rect,
+                hwnd,
+                error => PostToUi(() => HandleOverlayFailure(hwnd, overlay, error)));
+        }
+        catch (Exception ex)
+        {
+            // Building the overlay can fail for reasons that are transient or
+            // specific to one window - capture unsupported, the source window
+            // closing mid-toggle, a graphics device that would not create. The
+            // constructor releases whatever it acquired, so there is nothing here to
+            // undo but the caller's own state.
+            ReportPipelineFailure(ex);
+            return false;
+        }
+
+        overlay.Show();
+        _overlays[hwnd] = overlay;
+
+        // Straight away, not only on the next move or resize. The overlay is created
+        // after the toggle button, so without this the button spends the interval
+        // buried under the overlay it just produced - and the button's toggled
+        // colour is the only on-screen confirmation that invert is on.
+        RestackWindow(hwnd);
+        return true;
+    }
+
+    /// <summary>
+    /// Removes and destroys <paramref name="hwnd"/>'s overlay if it has one, leaving
+    /// the inverted flag alone. Safe to call for a window that has none.
+    /// </summary>
+    private void DestroyOverlay(nint hwnd)
+    {
+        if (!_overlays.Remove(hwnd, out var overlay))
+        {
+            return;
+        }
+
+        try
+        {
+            overlay.Destroy();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Destroying the invert overlay for 0x{hwnd:X} failed: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Takes inversion off <paramref name="hwnd"/> entirely - the flag, the overlay
+    /// and the button's toggled colour - and brings the menu back in line.
+    /// </summary>
+    private void ClearInvert(nint hwnd)
+    {
+        _invertedWindows.Remove(hwnd);
+        DestroyOverlay(hwnd);
+
+        if (_titleBarButtons.TryGetValue(hwnd, out var button))
+        {
+            button.SetToggledVisual(false);
+        }
+
+        RebuildWindowsMenu();
     }
 
     /// <summary>
@@ -491,56 +619,156 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        _overlays.Remove(hwnd);
-        _invertedWindows.Remove(hwnd);
-
-        try
-        {
-            failed.Destroy();
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Destroying the failed overlay for 0x{hwnd:X} failed: {ex}");
-        }
-
-        if (_titleBarButtons.TryGetValue(hwnd, out var button))
-        {
-            button.SetToggledVisual(false);
-        }
-
-        RebuildWindowsMenu();
-        ReportFailure(error);
+        ClearInvert(hwnd);
+        ReportPipelineFailure(error);
     }
 
     /// <summary>
-    /// Tells the user, once. Deliberately not <c>Debug.WriteLine</c>, which is
-    /// compiled out of the Release build the user actually runs - the diagnostic
-    /// that only exists in a debug build is not a diagnostic.
+    /// Logs a capture or render failure, and tells the user about it if one has not
+    /// been reported recently.
+    /// <para>
+    /// The balloon is the only channel that exists in the build the user actually
+    /// runs - <c>Debug.WriteLine</c> is compiled out of Release, and a diagnostic
+    /// that only exists in a debug build is not a diagnostic. See
+    /// <see cref="FailureNotificationThrottle"/> for why it is rate-limited rather
+    /// than either unlimited or once per session.
+    /// </para>
     /// </summary>
-    private void ReportFailure(Exception error)
+    private void ReportPipelineFailure(Exception error)
     {
         Debug.WriteLine($"Overlay pipeline failed: {error}");
 
-        if (_failureReported)
+        if (!_failureNotifications.ShouldReport())
         {
             return;
         }
 
-        _failureReported = true;
+        ShowBalloon(
+            "Inverting stopped for a window because the screen capture failed. "
+            + "That window is no longer inverted - switch it on again to retry.",
+            ToolTipIcon.Warning);
+    }
 
+    private void ShowBalloon(string text, ToolTipIcon icon)
+    {
         try
         {
-            _trayIcon.ShowBalloonTip(
-                10_000,
-                "Window Invert",
-                "Inverting stopped for a window because the screen capture failed. "
-                + "That window is no longer inverted - switch it on again to retry.",
-                ToolTipIcon.Warning);
+            _trayIcon.ShowBalloonTip(10_000, "Window Invert", text, icon);
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Showing the failure balloon failed: {ex}");
+            Debug.WriteLine($"Showing a notification balloon failed: {ex}");
         }
+    }
+
+    /// <summary>
+    /// Enters click-to-pick mode, unless it is already active.
+    /// <para>
+    /// The guard is not defensive tidying. The picker is a full-screen topmost
+    /// window, and so is the tray menu, so the menu item that starts this mode stays
+    /// reachable while the mode is running. Starting a second picker used to
+    /// overwrite the field holding the first, leaving a full-screen click-swallowing
+    /// window alive with nothing referencing it - and when the abandoned one's
+    /// callback eventually ran it cleared the field, dropping the only rooted
+    /// reference to the <i>new</i> picker while Windows was still calling its window
+    /// procedure. The identity checks in the callbacks below make that safe even if
+    /// a picker is somehow orphaned anyway.
+    /// </para>
+    /// </summary>
+    private void StartWindowPicker()
+    {
+        if (_activePicker is not null)
+        {
+            return;
+        }
+
+        WindowPickerOverlay? picker = null;
+        picker = new WindowPickerOverlay(
+            hwnd =>
+            {
+                ClearPicker(picker);
+                HandleWindowPicked(hwnd);
+            },
+            onCancelled: () => ClearPicker(picker));
+
+        _activePicker = picker;
+        picker.Show();
+    }
+
+    /// <summary>
+    /// Clears the rooted picker reference, but only if <paramref name="picker"/> is
+    /// still the current one. A callback from an abandoned picker must never unroot
+    /// its successor.
+    /// </summary>
+    private void ClearPicker(WindowPickerOverlay? picker)
+    {
+        if (ReferenceEquals(_activePicker, picker))
+        {
+            _activePicker = null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves what the user clicked in pick mode to a window this app can invert,
+    /// and says so when it cannot.
+    /// <para>
+    /// A click that resolves to nothing used to leave pick mode with no action and
+    /// no message, which for the app's most discoverable entry point is the wrong
+    /// failure shape: the wash disappears and the user is left to work out whether
+    /// anything happened. Clicking the desktop, the taskbar or a dialog box all
+    /// landed here.
+    /// </para>
+    /// </summary>
+    private void HandleWindowPicked(nint hitHwnd)
+    {
+        var target = ResolvePickedWindow(hitHwnd);
+
+        if (target == 0)
+        {
+            ShowBalloon(
+                "That is not a window this app can invert. The desktop, the taskbar and "
+                + "dialog boxes cannot be inverted - pick an application window instead.",
+                ToolTipIcon.Info);
+            return;
+        }
+
+        ToggleInvert(target);
+        RebuildWindowsMenu();
+    }
+
+    /// <summary>
+    /// Maps the window under the click to the window the user meant, or 0.
+    /// <para>
+    /// The toggle-button case is the one worth spelling out. This app's own floating
+    /// buttons are ordinary top-level windows that sit over their source's title
+    /// bar, and unlike the invert overlay they are not <c>WS_EX_TRANSPARENT</c>, so
+    /// a pick aimed at a window's title bar can land on one. It is never tracked, so
+    /// the lookup missed and the whole gesture did nothing. A button unambiguously
+    /// identifies the window it belongs to, which is the window the user was aiming
+    /// at anyway.
+    /// </para>
+    /// </summary>
+    private nint ResolvePickedWindow(nint hitHwnd)
+    {
+        if (hitHwnd == 0)
+        {
+            return 0;
+        }
+
+        if (_registry.TrackedWindows.ContainsKey(hitHwnd))
+        {
+            return hitHwnd;
+        }
+
+        foreach (var (source, button) in _titleBarButtons)
+        {
+            if (button.Handle == hitHwnd)
+            {
+                return source;
+            }
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -558,7 +786,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// <para>
     /// A click on an item fires after the drop-down has closed, so a rebuild caused
     /// by toggling a window still runs immediately; only a rebuild arriving while
-    /// the list is being browsed is deferred.
+    /// the list is being browsed is deferred. The deferral is also why
+    /// <see cref="ToggleInvert"/> must tolerate a handle that is no longer tracked:
+    /// the entry the user finally clicks may name a window that closed while they
+    /// were reading the list.
     /// </para>
     /// </summary>
     private void RebuildWindowsMenu()
@@ -572,11 +803,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _windowsMenuNeedsRebuild = false;
         _windowsMenu.DropDownItems.Clear();
 
-        // Untitled windows are tracked but not listed - a menu full of blank
+        // Hidden and cloaked windows stay tracked - that is what preserves an invert
+        // setting across a minimize-to-tray or a virtual desktop switch - but they
+        // are not listed. There is nothing on screen to invert, and an entry that
+        // silently does nothing when clicked is worse than no entry at all.
+        //
+        // Untitled windows are tracked but not listed either: a menu full of blank
         // entries is worse than a short menu. The one exception is a window that is
-        // currently inverted: it has to stay reachable so it can be switched back
+        // currently inverted, which has to stay reachable so it can be switched back
         // off, even if it never had a title (the click-to-pick path can invert one).
         var listed = _registry.TrackedWindows.Values
+            .Where(w => !w.IsHidden)
             .Where(w => !string.IsNullOrWhiteSpace(w.Title) || _invertedWindows.IsInverted(w.Hwnd))
             .OrderBy(w => w.Title, StringComparer.CurrentCultureIgnoreCase);
 
@@ -594,7 +831,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             item.Click += (_, _) =>
             {
-                ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect);
+                ToggleInvert(info.Hwnd);
                 item.Checked = _invertedWindows.IsInverted(info.Hwnd);
             };
 
