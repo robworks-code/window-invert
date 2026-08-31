@@ -79,15 +79,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _menu.Items.Add("Pick a window...", null, (_, _) =>
         {
-            _activePicker = new WindowPickerOverlay(hwnd =>
-            {
-                if (_registry.TrackedWindows.TryGetValue(hwnd, out var info))
+            // Held in a field, not a local: this object owns a native window
+            // procedure, and nothing else references it once Show() returns, so
+            // without a rooted reference the garbage collector is free to take it
+            // away while Windows is still calling into it.
+            _activePicker = new WindowPickerOverlay(
+                hwnd =>
                 {
-                    ToggleInvert(hwnd, _registry.TrackedWindows[hwnd].Rect);
-                    RebuildWindowsMenu();
-                }
-                _activePicker = null;
-            });
+                    if (_registry.TrackedWindows.TryGetValue(hwnd, out var info))
+                    {
+                        ToggleInvert(hwnd, info.Rect);
+                        RebuildWindowsMenu();
+                    }
+
+                    _activePicker = null;
+                },
+                onCancelled: () => _activePicker = null);
             _activePicker.Show();
         });
         _menu.Items.Add("Exit", null, (_, _) => ExitThread());
