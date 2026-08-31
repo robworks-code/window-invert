@@ -185,6 +185,9 @@ DocProject/Help/html
 # Click-Once directory
 publish/
 
+# dotnet publish output for this project (see docs/plans task 12)
+dist/
+
 # Publish Web Output
 *.[Pp]ublish.xml
 *.azurePubxml

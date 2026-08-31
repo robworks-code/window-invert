@@ -5,6 +5,10 @@
     <ProjectReference Include="..\WindowInvert.Native\WindowInvert.Native.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="WindowInvert.App.Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>

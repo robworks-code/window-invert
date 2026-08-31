@@ -26,6 +26,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu = new ContextMenuStrip();
         _menu.Items.Add(_windowsMenu);
         _menu.Items.Add(new ToolStripSeparator());
+
+        var startupItem = new ToolStripMenuItem("Start with Windows")
+        {
+            Checked = StartupRegistration.IsEnabled,
+            CheckOnClick = false,
+        };
+        startupItem.Click += (_, _) =>
+        {
+            if (startupItem.Checked)
+            {
+                StartupRegistration.Disable();
+            }
+            else
+            {
+                StartupRegistration.Enable();
+            }
+            startupItem.Checked = StartupRegistration.IsEnabled;
+        };
+        _menu.Items.Add(startupItem);
+
         _menu.Items.Add("Pick a window...", null, (_, _) =>
         {
             _activePicker = new WindowPickerOverlay(hwnd =>
