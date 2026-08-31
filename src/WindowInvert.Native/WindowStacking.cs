@@ -95,11 +95,19 @@ public static class WindowStacking
     /// the window and then need the ordering pass to undo it.
     /// </para>
     /// </summary>
+    /// <returns>
+    /// <see langword="true"/> if the window is in the requested band once this
+    /// returns - including when no call was needed because it already was, and when
+    /// there is no such window to place. <see langword="false"/> only when a real
+    /// <c>SetWindowPos</c> failed. "Nothing to do" and "the call failed" are
+    /// deliberately not the same answer: the caller retries on failure, and
+    /// conflating the two would make the steady state look like an error.
+    /// </returns>
     public static bool MatchBand(nint hwnd, bool topmost)
     {
         if (hwnd == 0 || IsTopmost(hwnd) == topmost)
         {
-            return false;
+            return true;
         }
 
         return NativeMethods.SetWindowPos(

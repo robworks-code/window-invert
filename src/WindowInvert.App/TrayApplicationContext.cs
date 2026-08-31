@@ -306,9 +306,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // acting on it: the anchor can be destroyed, and the source's band can
         // change. A half-applied plan is worse than either - the button moves and
         // the overlay does not, which can leave the overlay below the source.
-        if (!TryRestack(sourceHwnd, overlayHandle, buttonHandle))
+        if (!TryRestack(sourceHwnd, overlayHandle, buttonHandle)
+            && !TryRestack(sourceHwnd, overlayHandle, buttonHandle))
         {
-            TryRestack(sourceHwnd, overlayHandle, buttonHandle);
+            // Every other fallible path in this class says so when it gives up. A
+            // silently half-applied z-order is the one failure here that looks
+            // exactly like working software, so it is the last thing that should
+            // fail quietly.
+            Debug.WriteLine($"Restack failed twice for window {sourceHwnd:X}; z-order may be half-applied.");
         }
     }
 
@@ -320,8 +325,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private static bool TryRestack(nint sourceHwnd, nint overlayHandle, nint buttonHandle)
     {
         var sourceIsTopmost = WindowStacking.IsTopmost(sourceHwnd);
-        WindowStacking.MatchBand(overlayHandle, sourceIsTopmost);
-        WindowStacking.MatchBand(buttonHandle, sourceIsTopmost);
+
+        // Checked like every other step, not fire-and-forget. A failed band change
+        // leaves the surface in the wrong band, where the ordering pass below cannot
+        // lift it past the source - which is the silent "invert did nothing" shape.
+        if (!WindowStacking.MatchBand(overlayHandle, sourceIsTopmost)
+            || !WindowStacking.MatchBand(buttonHandle, sourceIsTopmost))
+        {
+            return false;
+        }
 
         // Read after the band changes, not before: moving a window into or out of
         // the topmost band changes what is above the source.
