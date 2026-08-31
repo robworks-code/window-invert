@@ -1,0 +1,15 @@
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\bin\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.deps.json
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\bin\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\bin\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.pdb
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\bin\Debug\net8.0-windows10.0.19041.0\WindowInvert.Core.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\bin\Debug\net8.0-windows10.0.19041.0\WindowInvert.Core.pdb
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.csproj.AssemblyReference.cache
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.AssemblyInfoInputs.cache
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.AssemblyInfo.cs
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.csproj.CoreCompileInputs.cache
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowIn.9110C02A.Up2Date
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\refint\WindowInvert.Native.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\WindowInvert.Native.pdb
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Native\obj\Debug\net8.0-windows10.0.19041.0\ref\WindowInvert.Native.dll

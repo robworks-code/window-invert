@@ -1,0 +1,128 @@
+{
+  "version": 3,
+  "targets": {
+    "net8.0-windows10.0.19041": {
+      "WindowInvert.Core/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "compile": {
+          "bin/placeholder/WindowInvert.Core.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/WindowInvert.Core.dll": {}
+        }
+      },
+      "WindowInvert.Native/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "dependencies": {
+          "WindowInvert.Core": "1.0.0"
+        },
+        "compile": {
+          "bin/placeholder/WindowInvert.Native.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/WindowInvert.Native.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "WindowInvert.Core/1.0.0": {
+      "type": "project",
+      "path": "../WindowInvert.Core/WindowInvert.Core.csproj",
+      "msbuildProject": "../WindowInvert.Core/WindowInvert.Core.csproj"
+    },
+    "WindowInvert.Native/1.0.0": {
+      "type": "project",
+      "path": "../WindowInvert.Native/WindowInvert.Native.csproj",
+      "msbuildProject": "../WindowInvert.Native/WindowInvert.Native.csproj"
+    }
+  },
+  "projectFileDependencyGroups": {
+    "net8.0-windows10.0.19041": [
+      "WindowInvert.Core >= 1.0.0",
+      "WindowInvert.Native >= 1.0.0"
+    ]
+  },
+  "packageFolders": {
+    "C:\\Users\\ringo\\.nuget\\packages\\": {}
+  },
+  "project": {
+    "version": "1.0.0",
+    "restore": {
+      "projectUniqueName": "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.App\\WindowInvert.App.csproj",
+      "projectName": "WindowInvert.App",
+      "projectPath": "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.App\\WindowInvert.App.csproj",
+      "packagesPath": "C:\\Users\\ringo\\.nuget\\packages\\",
+      "outputPath": "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.App\\obj\\",
+      "projectStyle": "PackageReference",
+      "configFilePaths": [
+        "C:\\Users\\ringo\\AppData\\Roaming\\NuGet\\NuGet.Config"
+      ],
+      "originalTargetFrameworks": [
+        "net8.0-windows10.0.19041.0"
+      ],
+      "sources": {
+        "https://api.nuget.org/v3/index.json": {}
+      },
+      "frameworks": {
+        "net8.0-windows10.0.19041": {
+          "targetAlias": "net8.0-windows10.0.19041.0",
+          "projectReferences": {
+            "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.Core\\WindowInvert.Core.csproj": {
+              "projectPath": "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.Core\\WindowInvert.Core.csproj"
+            },
+            "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.Native\\WindowInvert.Native.csproj": {
+              "projectPath": "C:\\Users\\ringo\\git\\accessibility-selective-window-contrast\\.claude\\worktrees\\per-window-invert-mvp\\src\\WindowInvert.Native\\WindowInvert.Native.csproj"
+            }
+          }
+        }
+      },
+      "warningProperties": {
+        "warnAsError": [
+          "NU1605"
+        ]
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "direct"
+      }
+    },
+    "frameworks": {
+      "net8.0-windows10.0.19041": {
+        "targetAlias": "net8.0-windows10.0.19041.0",
+        "imports": [
+          "net461",
+          "net462",
+          "net47",
+          "net471",
+          "net472",
+          "net48",
+          "net481"
+        ],
+        "assetTargetFallback": true,
+        "warn": true,
+        "downloadDependencies": [
+          {
+            "name": "Microsoft.Windows.SDK.NET.Ref",
+            "version": "[10.0.19041.56, 10.0.19041.56]"
+          }
+        ],
+        "frameworkReferences": {
+          "Microsoft.NETCore.App": {
+            "privateAssets": "all"
+          },
+          "Microsoft.Windows.SDK.NET.Ref": {
+            "privateAssets": "all"
+          },
+          "Microsoft.WindowsDesktop.App.WindowsForms": {
+            "privateAssets": "none"
+          }
+        },
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+      }
+    }
+  }
+}

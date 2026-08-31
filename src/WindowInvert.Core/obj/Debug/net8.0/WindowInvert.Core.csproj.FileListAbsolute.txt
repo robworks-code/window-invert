@@ -1,0 +1,11 @@
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\bin\Debug\net8.0\WindowInvert.Core.deps.json
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\bin\Debug\net8.0\WindowInvert.Core.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\bin\Debug\net8.0\WindowInvert.Core.pdb
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.AssemblyInfoInputs.cache
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.AssemblyInfo.cs
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.csproj.CoreCompileInputs.cache
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\refint\WindowInvert.Core.dll
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\WindowInvert.Core.pdb
+C:\Users\ringo\git\accessibility-selective-window-contrast\.claude\worktrees\per-window-invert-mvp\src\WindowInvert.Core\obj\Debug\net8.0\ref\WindowInvert.Core.dll

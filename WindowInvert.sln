@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F6C177F3-0E17-4E64-920E-BA9332605BC1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowInvert.Core", "src\WindowInvert.Core\WindowInvert.Core.csproj", "{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowInvert.Native", "src\WindowInvert.Native\WindowInvert.Native.csproj", "{0CF3A053-041E-4B77-9F94-D4BF51CDC586}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowInvert.App", "src\WindowInvert.App\WindowInvert.App.csproj", "{BCDE9139-053B-4A80-8CB4-5459792DBD77}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{1226C90A-7DFD-4FA6-B79B-2047C8029D33}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WindowInvert.Core.Tests", "tests\WindowInvert.Core.Tests\WindowInvert.Core.Tests.csproj", "{8D2A288B-8BAD-4C33-B551-B4D75EC29053}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0CF3A053-041E-4B77-9F94-D4BF51CDC586}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0CF3A053-041E-4B77-9F94-D4BF51CDC586}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0CF3A053-041E-4B77-9F94-D4BF51CDC586}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0CF3A053-041E-4B77-9F94-D4BF51CDC586}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BCDE9139-053B-4A80-8CB4-5459792DBD77}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BCDE9139-053B-4A80-8CB4-5459792DBD77}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BCDE9139-053B-4A80-8CB4-5459792DBD77}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BCDE9139-053B-4A80-8CB4-5459792DBD77}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8D2A288B-8BAD-4C33-B551-B4D75EC29053}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8D2A288B-8BAD-4C33-B551-B4D75EC29053}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8D2A288B-8BAD-4C33-B551-B4D75EC29053}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8D2A288B-8BAD-4C33-B551-B4D75EC29053}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{2A3DA7B0-7B2A-4E9E-AD85-8A59C06601C0} = {F6C177F3-0E17-4E64-920E-BA9332605BC1}
+		{0CF3A053-041E-4B77-9F94-D4BF51CDC586} = {F6C177F3-0E17-4E64-920E-BA9332605BC1}
+		{BCDE9139-053B-4A80-8CB4-5459792DBD77} = {F6C177F3-0E17-4E64-920E-BA9332605BC1}
+		{8D2A288B-8BAD-4C33-B551-B4D75EC29053} = {1226C90A-7DFD-4FA6-B79B-2047C8029D33}
+	EndGlobalSection
+EndGlobal
