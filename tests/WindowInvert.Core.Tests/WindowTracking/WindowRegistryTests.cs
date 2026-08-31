@@ -243,6 +243,208 @@ public class WindowRegistryTests
         Assert.False(raised);
     }
 
+    [Theory]
+    [InlineData(WinEventType.Hide)]
+    [InlineData(WinEventType.Cloaked)]
+    public void HandleHideOrCloak_TrackedWindow_KeepsItTrackedAndOffScreen(WinEventType type)
+    {
+        // Hiding is not destroying. Applications that minimize to the notification
+        // area hide the same window they later show again, and a virtual desktop
+        // switch cloaks every window on the desktop being left. Untracking here
+        // discarded the user's invert choice with nothing to explain why.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        api.Titles[hwnd] = "Chat";
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        var untracked = new List<nint>();
+        registry.WindowUntracked += h => untracked.Add(h);
+        WindowInfo? visibility = null;
+        registry.WindowVisibilityChanged += info => visibility = info;
+
+        registry.HandleWinEvent(type, hwnd);
+
+        Assert.Empty(untracked);
+        Assert.True(registry.TrackedWindows.ContainsKey(hwnd));
+        Assert.True(registry.TrackedWindows[hwnd].IsHidden);
+        Assert.False(registry.TrackedWindows[hwnd].IsOnScreen);
+        Assert.NotNull(visibility);
+        Assert.False(visibility!.Value.IsOnScreen);
+    }
+
+    [Theory]
+    [InlineData(WinEventType.Show)]
+    [InlineData(WinEventType.Uncloaked)]
+    public void HandleShowOrUncloak_AfterHiding_BringsTheWindowBackOnScreen(WinEventType type)
+    {
+        // Uncloaking is the only notification a window returning from another
+        // virtual desktop raises - WS_VISIBLE was set the whole time - so it has to
+        // be handled exactly like a show.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        api.Titles[hwnd] = "Chat";
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+        registry.HandleWinEvent(WinEventType.Hide, hwnd);
+
+        var visibilityEvents = new List<bool>();
+        registry.WindowVisibilityChanged += info => visibilityEvents.Add(info.IsOnScreen);
+
+        registry.HandleWinEvent(type, hwnd);
+
+        Assert.Equal(new[] { true }, visibilityEvents);
+        Assert.False(registry.TrackedWindows[hwnd].IsHidden);
+    }
+
+    [Fact]
+    public void HandleHide_Repeated_RaisesVisibilityChangedOnlyOnce()
+    {
+        // Consumers destroy a surface in response to this, and hide notifications
+        // repeat.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        var raised = 0;
+        registry.WindowVisibilityChanged += _ => raised++;
+
+        registry.HandleWinEvent(WinEventType.Hide, hwnd);
+        registry.HandleWinEvent(WinEventType.Hide, hwnd);
+        registry.HandleWinEvent(WinEventType.Cloaked, hwnd);
+
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public void HandleShow_HandleReusedByAnotherProcess_UntracksBeforeTrackingAgain()
+    {
+        // Windows recycles window handles, and out-of-context event delivery is
+        // best-effort, so a missed destroy plus a reused handle leaves the registry
+        // serving a dead window's title and rect. The order matters as much as the
+        // outcome: consumers tear the old window's overlay and toggle button down on
+        // untrack, and a refresh in place would leave them attached to a window that
+        // no longer exists.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        api.Titles[hwnd] = "Old window";
+        api.ProcessIds[hwnd] = 1234;
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        var sequence = new List<string>();
+        registry.WindowUntracked += _ => sequence.Add("untracked");
+        registry.WindowTracked += _ => sequence.Add("tracked");
+
+        api.ProcessIds[hwnd] = 9999;
+        api.Titles[hwnd] = "Different window";
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        Assert.Equal(new[] { "untracked", "tracked" }, sequence);
+        Assert.Equal("Different window", registry.TrackedWindows[hwnd].Title);
+        Assert.Equal(9999u, registry.TrackedWindows[hwnd].ProcessId);
+    }
+
+    [Fact]
+    public void HandleShow_TrackedWindowWithStaleState_RefreshesTitleAndRect()
+    {
+        // Same process, so the same window - refreshed in place rather than
+        // recycled. This is the repair path for a location or name change that was
+        // dropped while the window was away.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        api.Titles[hwnd] = "Before";
+        api.ProcessIds[hwnd] = 1234;
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        api.Titles[hwnd] = "After";
+        api.Rects[hwnd] = new WindowRect(300, 400, 800, 600);
+
+        var titles = new List<string>();
+        registry.WindowTitleChanged += info => titles.Add(info.Title);
+        var rects = new List<WindowRect>();
+        registry.WindowGeometryChanged += info => rects.Add(info.Rect);
+
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        Assert.Equal(new[] { "After" }, titles);
+        Assert.Equal(new[] { new WindowRect(300, 400, 800, 600) }, rects);
+        Assert.Equal("After", registry.TrackedWindows[hwnd].Title);
+    }
+
+    [Fact]
+    public void HandleShow_TrackedWindowWithNothingChanged_RaisesNothing()
+    {
+        // Applications call ShowWindow on windows that are already showing, so the
+        // common case has to cost nothing.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        api.Titles[hwnd] = "Steady";
+        api.ProcessIds[hwnd] = 1234;
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        var raised = 0;
+        registry.WindowTracked += _ => raised++;
+        registry.WindowUntracked += _ => raised++;
+        registry.WindowTitleChanged += _ => raised++;
+        registry.WindowGeometryChanged += _ => raised++;
+        registry.WindowVisibilityChanged += _ => raised++;
+
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void HandleCloak_UntrackedWindow_IsIgnored()
+    {
+        var (registry, _) = MakeRegistry();
+        var raised = false;
+        registry.WindowVisibilityChanged += _ => raised = true;
+
+        registry.HandleWinEvent(WinEventType.Cloaked, hwnd: 999);
+
+        Assert.False(raised);
+        Assert.False(registry.TrackedWindows.ContainsKey(999));
+    }
+
+    [Fact]
+    public void HandleDestroy_AfterHiding_StillUntracks()
+    {
+        // A hidden window that is then closed must not linger. Hide keeps it;
+        // destroy is what removes it.
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+        registry.HandleWinEvent(WinEventType.Hide, hwnd);
+
+        nint? untracked = null;
+        registry.WindowUntracked += h => untracked = h;
+
+        registry.HandleWinEvent(WinEventType.Destroy, hwnd);
+
+        Assert.Equal(hwnd, untracked);
+        Assert.False(registry.TrackedWindows.ContainsKey(hwnd));
+    }
+
+    [Fact]
+    public void MinimizedWindow_IsNotOnScreen()
+    {
+        var (registry, api) = MakeRegistry();
+        const nint hwnd = 42;
+        api.Rects[hwnd] = new WindowRect(0, 0, 100, 100);
+        registry.HandleWinEvent(WinEventType.Show, hwnd);
+
+        registry.HandleWinEvent(WinEventType.MinimizeStart, hwnd);
+
+        Assert.False(registry.TrackedWindows[hwnd].IsOnScreen);
+        Assert.False(registry.TrackedWindows[hwnd].IsHidden);
+    }
+
     [Fact]
     public void Bootstrap_SeedsTrackedWindowsWithoutRaisingEvents()
     {

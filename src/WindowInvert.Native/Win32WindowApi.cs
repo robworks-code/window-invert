@@ -56,12 +56,21 @@ public sealed class Win32WindowApi : IWin32WindowApi
 
     /// <summary>
     /// The single definition of "a window this app will put an overlay on":
-    /// its own <c>GA_ROOT</c> ancestor, and no owner.
+    /// its own <c>GA_ROOT</c> ancestor, no owner, and not cloaked.
     /// <para>
     /// <c>GA_ROOT</c> rejects child windows - a child's root is its top-level
     /// parent, never itself. <c>GW_OWNER</c> rejects tooltips, menu popups,
     /// combobox drop lists and dialogs, which are top-level by
     /// <c>GA_ROOT</c> but are owned by the window they belong to.
+    /// </para>
+    /// <para>
+    /// The cloak check rejects what the other two cannot see. A suspended store app
+    /// - Settings, Calculator, the Store itself, all hosted by
+    /// <c>ApplicationFrameHost</c> - and every window on a virtual desktop the user
+    /// has switched away from stays <c>WS_VISIBLE</c>, unowned, its own root, and
+    /// titled. Each one passed, so a default Windows 11 desktop produced a set of
+    /// floating toggle buttons sitting over unrelated content, belonging to windows
+    /// the user could not see, plus tray-menu entries for them.
     /// </para>
     /// <para>
     /// Deliberately shared by <see cref="WindowEnumerator"/> (the startup path) and
@@ -82,7 +91,25 @@ public sealed class Win32WindowApi : IWin32WindowApi
     internal static bool IsTopLevelWindow(nint hwnd) =>
         hwnd != 0
         && NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT) == hwnd
-        && NativeMethods.GetWindow(hwnd, NativeMethods.GW_OWNER) == 0;
+        && NativeMethods.GetWindow(hwnd, NativeMethods.GW_OWNER) == 0
+        && !IsCloaked(hwnd);
+
+    /// <summary>
+    /// Whether DWM has stopped compositing this window.
+    /// <para>
+    /// Deliberately open on failure: any non-<c>S_OK</c> answer is read as "not
+    /// cloaked" and the window stays eligible. The alternative fails in the one
+    /// direction this app must never fail in - a single bad HRESULT would make
+    /// every window untrackable and the whole feature would do nothing at all,
+    /// with no error, which is indistinguishable from the app being broken. A
+    /// window wrongly kept is a stray toggle button; a window wrongly rejected
+    /// cannot be inverted.
+    /// </para>
+    /// </summary>
+    private static bool IsCloaked(nint hwnd) =>
+        NativeMethods.DwmGetWindowAttributeInt(
+            hwnd, NativeMethods.DWMWA_CLOAKED, out var cloaked, sizeof(int)) == 0
+        && cloaked != 0;
 
     public string GetTitle(nint hwnd)
     {

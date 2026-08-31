@@ -15,16 +15,19 @@ public sealed class WinEventHookListener
     /// <summary>EVENT_OBJECT_DESTROY (0x8001) .. EVENT_OBJECT_NAMECHANGE (0x800C).</summary>
     private nint _objectHook;
 
+    /// <summary>EVENT_OBJECT_CLOAKED (0x8017) .. EVENT_OBJECT_UNCLOAKED (0x8018).</summary>
+    private nint _cloakHook;
+
     public event Action<WinEventType, nint>? WindowEvent;
 
     public WinEventHookListener() => _callback = OnWinEvent;
 
     /// <summary>
-    /// Installs two narrow hooks, one per contiguous run of events this type
+    /// Installs three narrow hooks, one per contiguous run of events this type
     /// actually handles.
     /// <para>
     /// A single EVENT_MIN..EVENT_MAX hook would register for every accessibility
-    /// event raised anywhere on the desktop and discard all but eight of them in
+    /// event raised anywhere on the desktop and discard all but ten of them in
     /// managed code. Value changes, state changes, scroll notifications and
     /// per-keystroke text-selection changes from every running application would
     /// then cross the process boundary and wake this app's message loop. Delivery
@@ -34,8 +37,19 @@ public sealed class WinEventHookListener
     /// its window during a drag.
     /// </para>
     /// <para>
-    /// The two ranges are contiguous runs, so the name-change event that fills in a
+    /// Each range is a contiguous run, so the name-change event that fills in a
     /// late window title costs no extra hook - it is the top of the object range.
+    /// The cloak pair sits ten events above that range and gets its own hook rather
+    /// than being swept in by widening the object range, which would pull in
+    /// selection, value-change and text-change traffic from the whole desktop.
+    /// </para>
+    /// <para>
+    /// The cloak hook is not optional. Since the tracking predicate rejects cloaked
+    /// windows, uncloaking is the <i>only</i> notification that a window on another
+    /// virtual desktop has come back: <c>WS_VISIBLE</c> was set the entire time, so
+    /// switching desktops raises no show event. Without this hook, every window on
+    /// every other desktop would become permanently untrackable the moment the user
+    /// switched away from it.
     /// </para>
     /// </summary>
     /// <exception cref="InvalidOperationException">
@@ -43,9 +57,9 @@ public sealed class WinEventHookListener
     /// </exception>
     public void Start()
     {
-        // With two handles to leak rather than one, a second Start() would silently
-        // orphan both of the first pair with no way left to unhook them.
-        if (_systemHook != 0 || _objectHook != 0)
+        // With three handles to leak rather than one, a second Start() would silently
+        // orphan every one of the first set with no way left to unhook them.
+        if (_systemHook != 0 || _objectHook != 0 || _cloakHook != 0)
         {
             throw new InvalidOperationException(
                 $"{nameof(WinEventHookListener)} is already started. Call {nameof(Stop)} first.");
@@ -62,9 +76,15 @@ public sealed class WinEventHookListener
         {
             // Half-installed is not a state this type may be left in: Stop() would
             // have nothing recorded to undo if the caller gave up here.
-            NativeMethods.UnhookWinEvent(_systemHook);
-            _systemHook = 0;
+            Stop();
             throw new InvalidOperationException("SetWinEventHook failed for the object event range.");
+        }
+
+        _cloakHook = Hook(NativeMethods.EVENT_OBJECT_CLOAKED, NativeMethods.EVENT_OBJECT_UNCLOAKED);
+        if (_cloakHook == 0)
+        {
+            Stop();
+            throw new InvalidOperationException("SetWinEventHook failed for the cloak event range.");
         }
     }
 
@@ -98,6 +118,12 @@ public sealed class WinEventHookListener
             NativeMethods.UnhookWinEvent(_objectHook);
             _objectHook = 0;
         }
+
+        if (_cloakHook != 0)
+        {
+            NativeMethods.UnhookWinEvent(_cloakHook);
+            _cloakHook = 0;
+        }
     }
 
     private void OnWinEvent(
@@ -124,6 +150,8 @@ public sealed class WinEventHookListener
             NativeMethods.EVENT_OBJECT_DESTROY => WinEventType.Destroy,
             NativeMethods.EVENT_OBJECT_LOCATIONCHANGE => WinEventType.LocationChange,
             NativeMethods.EVENT_OBJECT_NAMECHANGE => WinEventType.NameChange,
+            NativeMethods.EVENT_OBJECT_CLOAKED => WinEventType.Cloaked,
+            NativeMethods.EVENT_OBJECT_UNCLOAKED => WinEventType.Uncloaked,
             NativeMethods.EVENT_SYSTEM_FOREGROUND => WinEventType.ForegroundChange,
             NativeMethods.EVENT_SYSTEM_MINIMIZESTART => WinEventType.MinimizeStart,
             NativeMethods.EVENT_SYSTEM_MINIMIZEEND => WinEventType.MinimizeEnd,

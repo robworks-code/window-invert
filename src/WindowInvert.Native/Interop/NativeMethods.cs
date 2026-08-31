@@ -39,11 +39,33 @@ internal static class NativeMethods
     public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
     /// <summary>
+    /// <c>DWMWA_CLOAKED</c>. Non-zero when DWM is not compositing the window even
+    /// though it is still <c>WS_VISIBLE</c> - a suspended store app, or a window
+    /// sitting on a virtual desktop the user has switched away from. The particular
+    /// non-zero value says who cloaked it (the app, the shell, or an owner), which
+    /// this app has no reason to distinguish.
+    /// </summary>
+    public const int DWMWA_CLOAKED = 14;
+
+    /// <summary>
     /// Returns an HRESULT rather than a BOOL, so callers must compare against
     /// <c>S_OK</c> (0) rather than treating any value as success.
     /// </summary>
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(nint hWnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+    /// <summary>
+    /// The <c>DWORD</c>-valued form, for attributes like
+    /// <see cref="DWMWA_CLOAKED"/>. Same HRESULT contract as the
+    /// <see cref="RECT"/> form above.
+    /// <para>
+    /// Deliberately a separate managed name rather than an overload: both forms
+    /// differ only in an <c>out</c> parameter, which <c>out var</c> at the call site
+    /// cannot disambiguate.
+    /// </para>
+    /// </summary>
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    public static extern int DwmGetWindowAttributeInt(nint hWnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowTextLength(nint hWnd);
@@ -100,6 +122,15 @@ internal static class NativeMethods
 
     public const uint GA_ROOT = 2;
 
+    /// <summary>
+    /// <c>GA_ROOTOWNER</c>. Walks both the parent and the owner chain to the top, so
+    /// a modal dialog resolves to the application window that owns it in one call.
+    /// That is exactly the window Windows raises alongside the dialog when the
+    /// dialog is activated, and therefore the other window whose overlay and toggle
+    /// button need putting back.
+    /// </summary>
+    public const uint GA_ROOTOWNER = 3;
+
     /// <summary>The window directly <i>above</i> the given one in the z-order.</summary>
     public const uint GW_HWNDPREV = 3;
 
@@ -137,6 +168,8 @@ internal static class NativeMethods
     public const uint EVENT_OBJECT_HIDE = 0x8003;
     public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     public const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+    public const uint EVENT_OBJECT_CLOAKED = 0x8017;
+    public const uint EVENT_OBJECT_UNCLOAKED = 0x8018;
 
     /// <summary>
     /// <c>OBJID_WINDOW</c>. The accessible object that <i>is</i> the window, as
