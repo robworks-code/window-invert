@@ -30,6 +30,16 @@ public sealed class CaptureEngine : IDisposable
     /// </summary>
     private readonly object _sync = new();
 
+    /// <summary>
+    /// Serializes <see cref="Start"/> against <see cref="Stop"/> so the two cannot
+    /// interleave. Deliberately a different lock from <see cref="_sync"/>: teardown
+    /// disposes the frame pool while holding this one but *not* <see cref="_sync"/>,
+    /// so a frame callback blocked on <see cref="_sync"/> can always make progress.
+    /// The frame callback never acquires this lock, so there is no ordering
+    /// inversion between the two.
+    /// </summary>
+    private readonly object _lifecycleGate = new();
+
     private ID3D11Device? _d3dDevice;
     private IDirect3DDevice? _winrtDevice;
     private GraphicsCaptureItem? _item;
@@ -86,9 +96,9 @@ public sealed class CaptureEngine : IDisposable
             throw new ArgumentException("Window handle must not be null.", nameof(hwnd));
         }
 
-        lock (_sync)
+        lock (_lifecycleGate)
         {
-            Stop();
+            StopCore();
 
             if (!GraphicsCaptureSession.IsSupported())
             {
@@ -97,44 +107,50 @@ public sealed class CaptureEngine : IDisposable
 
             try
             {
-                // BgraSupport is required for the Direct2D interop in the render
-                // stage that consumes Device.
-                D3D11.D3D11CreateDevice(
-                    null,
-                    DriverType.Hardware,
-                    DeviceCreationFlags.BgraSupport,
-                    null,
-                    out _d3dDevice).CheckError();
-
-                using (var dxgiDevice = _d3dDevice!.QueryInterface<IDXGIDevice>())
+                lock (_sync)
                 {
-                    _winrtDevice = Direct3D11Helper.CreateDirect3DDeviceFromDXGIDevice(dxgiDevice);
+                    // BgraSupport is required for the Direct2D interop in the render
+                    // stage that consumes Device.
+                    D3D11.D3D11CreateDevice(
+                        null,
+                        DriverType.Hardware,
+                        DeviceCreationFlags.BgraSupport,
+                        null,
+                        out _d3dDevice).CheckError();
+
+                    using (var dxgiDevice = _d3dDevice!.QueryInterface<IDXGIDevice>())
+                    {
+                        _winrtDevice = Direct3D11Helper.CreateDirect3DDeviceFromDXGIDevice(dxgiDevice);
+                    }
+
+                    _item = CaptureHelper.CreateItemForWindow(hwnd);
+                    _poolSize = _item.Size;
+
+                    // CreateFreeThreaded, not Create: Create raises FrameArrived on the
+                    // calling thread and requires that thread to own a DispatcherQueue,
+                    // which a WinForms UI thread does not have. Free-threaded delivery
+                    // removes that requirement at the cost of the threading contract
+                    // documented on FrameArrived.
+                    _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+                        _winrtDevice,
+                        PixelFormat,
+                        FramePoolBufferCount,
+                        _poolSize);
+
+                    _frameArrivedHandler = OnFrameArrived;
+                    _framePool.FrameArrived += _frameArrivedHandler;
+
+                    _session = _framePool.CreateCaptureSession(_item);
+                    _running = true;
                 }
 
-                _item = CaptureHelper.CreateItemForWindow(hwnd);
-                _poolSize = _item.Size;
-
-                // CreateFreeThreaded, not Create: Create raises FrameArrived on the
-                // calling thread and requires that thread to own a DispatcherQueue,
-                // which a WinForms UI thread does not have. Free-threaded delivery
-                // removes that requirement at the cost of the threading contract
-                // documented on FrameArrived.
-                _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-                    _winrtDevice,
-                    PixelFormat,
-                    FramePoolBufferCount,
-                    _poolSize);
-
-                _frameArrivedHandler = OnFrameArrived;
-                _framePool.FrameArrived += _frameArrivedHandler;
-
-                _session = _framePool.CreateCaptureSession(_item);
-                _running = true;
-                _session.StartCapture();
+                // Outside _sync: once this returns, frames start arriving on the
+                // thread pool, and the callback needs _sync to do anything.
+                _session!.StartCapture();
             }
             catch
             {
-                Stop();
+                StopCore();
                 throw;
             }
         }
@@ -147,6 +163,24 @@ public sealed class CaptureEngine : IDisposable
     /// </summary>
     public void Stop()
     {
+        lock (_lifecycleGate)
+        {
+            StopCore();
+        }
+    }
+
+    public void Dispose() => Stop();
+
+    /// <summary>
+    /// Teardown proper. Callers must already hold <see cref="_lifecycleGate"/>.
+    /// </summary>
+    private void StopCore()
+    {
+        GraphicsCaptureSession? session;
+        Direct3D11CaptureFramePool? framePool;
+        IDirect3DDevice? winrtDevice;
+        ID3D11Device? d3dDevice;
+
         lock (_sync)
         {
             _running = false;
@@ -158,23 +192,37 @@ public sealed class CaptureEngine : IDisposable
 
             _frameArrivedHandler = null;
 
-            _session?.Dispose();
+            session = _session;
+            framePool = _framePool;
+            winrtDevice = _winrtDevice;
+            d3dDevice = _d3dDevice;
+
             _session = null;
-            _framePool?.Dispose();
             _framePool = null;
             _item = null;
-
-            // IDirect3DDevice is a projection wrapper; dropping the reference lets
-            // it release the underlying object. It has no IDisposable of its own.
             _winrtDevice = null;
-
-            _d3dDevice?.Dispose();
             _d3dDevice = null;
             _poolSize = default;
         }
-    }
 
-    public void Dispose() => Stop();
+        // Disposed after releasing _sync, deliberately. Having acquired _sync above
+        // already guarantees no callback is mid-flight, and any callback that
+        // arrives from here on sees _running == false and returns without touching
+        // these objects - so nothing is disposed out from under a live handler.
+        // Disposing the frame pool while still holding _sync would instead risk a
+        // deadlock: if Close() internally waits on a pending frame delivery whose
+        // handler is blocked acquiring _sync, the two would wait on each other.
+        session?.Dispose();
+        framePool?.Dispose();
+
+        // IDirect3DDevice projects WinRT's IClosable as IDisposable. Skipping this
+        // would leave the wrapper's reference to the underlying device alive until
+        // finalization, so the D3D11 device below would not actually be destroyed
+        // when Stop() returns - which would quietly weaken the "a restart
+        // invalidates the previously borrowed Device" contract this type documents.
+        winrtDevice?.Dispose();
+        d3dDevice?.Dispose();
+    }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
