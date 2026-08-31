@@ -147,7 +147,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             item.Click += (_, _) =>
             {
-                ToggleInvert(info.Hwnd, info.Rect);
+                ToggleInvert(info.Hwnd, _registry.TrackedWindows[info.Hwnd].Rect);
                 item.Checked = _invertedWindows.IsInverted(info.Hwnd);
             };
 
