@@ -10,7 +10,6 @@ internal sealed class InvertOverlayWindow : NativeWindow
     private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
-    private const int GWL_EXSTYLE = -20;
     private const uint LWA_ALPHA = 0x2;
     private const int SW_SHOW = 5;
     private const int SW_HIDE = 0;
@@ -47,6 +46,13 @@ internal sealed class InvertOverlayWindow : NativeWindow
         // still visible beneath it while proving positioning/click-through
         // ahead of the real invert pipeline (Task 11).
         SetLayeredWindowAttributes(Handle, 0, 160, LWA_ALPHA);
+
+        // Place into the topmost z-order band immediately on creation.
+        // Without this, the overlay starts as an ordinary window and only
+        // gets promoted to topmost on the source window's *next* move/resize
+        // (via Reposition), so activating the source window right after
+        // toggle-on would restack it above the overlay in the meantime.
+        SetWindowPos(Handle, HWND_TOPMOST, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height, SWP_NOACTIVATE);
     }
 
     public void Reposition(WindowRect sourceRect)
