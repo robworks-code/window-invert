@@ -12,6 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WindowRegistry _registry;
     private readonly InvertedWindowSet _invertedWindows = new();
     private readonly WinEventHookListener _hook = new();
+    private readonly Dictionary<nint, InvertOverlayWindow> _overlays = new();
 
     public TrayApplicationContext()
     {
@@ -35,7 +36,28 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _registry.WindowUntracked += hwnd =>
         {
             _invertedWindows.Remove(hwnd);
+            if (_overlays.Remove(hwnd, out var overlay))
+            {
+                overlay.Destroy();
+            }
             RebuildWindowsMenu();
+        };
+
+        _registry.WindowGeometryChanged += info =>
+        {
+            if (_overlays.TryGetValue(info.Hwnd, out var overlay))
+            {
+                overlay.Reposition(info.Rect);
+            }
+        };
+
+        _registry.WindowVisibilityChanged += info =>
+        {
+            if (_overlays.TryGetValue(info.Hwnd, out var overlay))
+            {
+                if (info.IsMinimized) overlay.Hide();
+                else overlay.Show();
+            }
         };
 
         _hook.WindowEvent += (type, hwnd) => _registry.HandleWinEvent(type, hwnd);
@@ -73,7 +95,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             item.Click += (_, _) =>
             {
-                item.Checked = _invertedWindows.Toggle(info.Hwnd);
+                var isNowInverted = _invertedWindows.Toggle(info.Hwnd);
+                item.Checked = isNowInverted;
+
+                if (isNowInverted)
+                {
+                    var overlay = new InvertOverlayWindow(info.Rect);
+                    overlay.Show();
+                    _overlays[info.Hwnd] = overlay;
+                }
+                else if (_overlays.Remove(info.Hwnd, out var overlay))
+                {
+                    overlay.Destroy();
+                }
             };
 
             _windowsMenu.DropDownItems.Add(item);
