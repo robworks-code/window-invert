@@ -23,9 +23,22 @@ internal sealed class InvertOverlayWindow : NativeWindow
 
     private readonly Native.CaptureEngine _captureEngine = new();
     private readonly Native.InvertRenderer _renderer = new();
+    private readonly Action<Exception>? _onPipelineFailed;
+    private int _failureReported;
 
-    public InvertOverlayWindow(WindowRect initial, nint sourceHwnd)
+    /// <param name="onPipelineFailed">
+    /// Called the first time capture or rendering fails for this overlay.
+    /// <para>
+    /// <b>Raised on a thread pool thread, holding the capture engine's callback
+    /// lock.</b> The handler must not tear this overlay down inline: doing so calls
+    /// <c>CaptureEngine.Stop</c>/<c>Dispose</c> from inside the engine's own frame
+    /// callback, which the engine rejects with an <c>InvalidOperationException</c>
+    /// rather than deadlocking. Post the teardown to the UI thread.
+    /// </para>
+    /// </param>
+    public InvertOverlayWindow(WindowRect initial, nint sourceHwnd, Action<Exception>? onPipelineFailed = null)
     {
+        _onPipelineFailed = onPipelineFailed;
         var overlayRect = OverlayGeometry.ComputeOverlayRect(initial);
 
         var cp = new CreateParams
@@ -72,6 +85,11 @@ internal sealed class InvertOverlayWindow : NativeWindow
 
         try
         {
+            // Subscribed before anything can fail, so a failure during startup is
+            // reported the same way as one an hour later.
+            _captureEngine.CaptureFailed += OnPipelineFailed;
+            _renderer.RenderFailed += OnPipelineFailed;
+
             // Start capturing before attaching: the renderer builds its Direct2D
             // device on the engine's D3D11 device, which only exists once the engine
             // is running.
@@ -96,11 +114,33 @@ internal sealed class InvertOverlayWindow : NativeWindow
             // topmost window this block exists to prevent - while also replacing the
             // real failure with a less informative one. The original exception is the
             // one that propagates.
+            _captureEngine.CaptureFailed -= OnPipelineFailed;
+            _renderer.RenderFailed -= OnPipelineFailed;
             SafeDispose(_captureEngine, nameof(_captureEngine));
             SafeDispose(_renderer, nameof(_renderer));
             DestroyHandle();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Reports the first capture or render failure and ignores the rest.
+    /// <para>
+    /// Runs on a thread pool thread; see the constructor parameter's contract for
+    /// why the handler may not act on this inline. Reported once because the render
+    /// path keeps producing failures - once a graphics device is lost, every
+    /// subsequent frame fails the same way - and the consumer only needs telling
+    /// that this overlay has stopped working.
+    /// </para>
+    /// </summary>
+    private void OnPipelineFailed(Exception error)
+    {
+        if (Interlocked.Exchange(ref _failureReported, 1) != 0)
+        {
+            return;
+        }
+
+        _onPipelineFailed?.Invoke(error);
     }
 
     /// <summary>
@@ -146,6 +186,13 @@ internal sealed class InvertOverlayWindow : NativeWindow
         // so the reverse order would be safe too - this is simply the order that
         // never contends. The renderer must go before DestroyHandle, since its
         // DirectComposition target is bound to this HWND.
+        //
+        // Unsubscribed first so a failure raised during teardown cannot re-enter the
+        // consumer, which is very likely already in the middle of destroying this
+        // overlay because of an earlier failure.
+        _captureEngine.CaptureFailed -= OnPipelineFailed;
+        _renderer.RenderFailed -= OnPipelineFailed;
+
         _captureEngine.Dispose();
         _renderer.Dispose();
         DestroyHandle();

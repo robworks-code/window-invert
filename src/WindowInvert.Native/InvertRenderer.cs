@@ -111,6 +111,27 @@ public sealed class InvertRenderer : IDisposable
     public Exception? LastRenderError => _lastRenderError;
 
     /// <summary>
+    /// Raised when a frame fails to draw or present.
+    /// <para>
+    /// This exists because <see cref="LastRenderError"/> on its own is not a signal
+    /// anyone sees. Render failures are swallowed so they cannot kill the process
+    /// from a thread pool thread, which leaves the overlay showing the last frame it
+    /// managed - and a frozen overlay is bit-identical on screen to a working
+    /// overlay over a window that simply is not changing. The user goes on reading a
+    /// snapshot while typing into the live window underneath, with nothing to
+    /// suggest anything is wrong.
+    /// </para>
+    /// <para>
+    /// <b>Threading:</b> raised on the thread pool thread that was rendering the
+    /// frame, holding both this type's render lock and the engine's callback lock.
+    /// A handler must post its work elsewhere - tearing the overlay down from here
+    /// would call back into the engine from its own callback thread, which the
+    /// engine rejects outright.
+    /// </para>
+    /// </summary>
+    public event Action<Exception>? RenderFailed;
+
+    /// <summary>
     /// Binds a DirectComposition visual tree to <paramref name="overlayHwnd"/> and
     /// starts drawing <paramref name="engine"/>'s frames into it. Any previous
     /// attachment is torn down first. <paramref name="engine"/> must already be
@@ -373,10 +394,27 @@ public sealed class InvertRenderer : IDisposable
                 // escaping exception terminates the process - a transient
                 // device-removed or a failed Present would take the whole tray app
                 // down with it, and for a user who depends on this overlay for
-                // legibility a stalled overlay is strictly better than a crash. The
-                // failure is recorded rather than lost; the next frame retries.
+                // legibility a stalled overlay is strictly better than a crash.
+                //
+                // Swallowing it is not the same as hiding it, though. The failure is
+                // recorded AND reported, because the alternative - carrying on
+                // silently in the hope that the next frame works - is what produces
+                // a frozen overlay indistinguishable from a working one. The
+                // consumer decides what to do about it; nothing here tries to
+                // recover the device.
                 _lastRenderError = ex;
                 Debug.WriteLine($"{nameof(InvertRenderer)}: frame dropped - {ex}");
+
+                try
+                {
+                    RenderFailed?.Invoke(ex);
+                }
+                catch (Exception handlerEx)
+                {
+                    // Letting this escape would be the process kill the whole catch
+                    // block exists to prevent.
+                    Debug.WriteLine($"{nameof(InvertRenderer)}: {nameof(RenderFailed)} handler threw - {handlerEx}");
+                }
 
                 if (drawing)
                 {

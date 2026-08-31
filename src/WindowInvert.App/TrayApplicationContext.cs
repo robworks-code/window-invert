@@ -19,8 +19,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<nint, TitleBarButtonWindow> _titleBarButtons = new();
     private WindowPickerOverlay? _activePicker;
 
+    /// <summary>
+    /// An invisible, parentless control whose only job is to own a window handle on
+    /// the UI thread, so work can be posted there from a thread pool thread.
+    /// <para>
+    /// Needed because the capture and render failures this app has to react to are
+    /// raised on a thread pool thread, from inside the capture engine's own frame
+    /// callback, while the engine holds its callback lock - and the reaction is to
+    /// tear the overlay down, which means stopping that engine. The engine rejects
+    /// that outright when it is called from its own callback thread. So the
+    /// teardown is posted, never performed inline.
+    /// </para>
+    /// <para>
+    /// A control rather than the captured <c>SynchronizationContext</c>: this
+    /// constructor runs before <c>Application.Run</c>, so there is no guarantee the
+    /// WinForms synchronization context has been installed yet.
+    /// </para>
+    /// </summary>
+    private readonly Control _uiMarshal = new();
+
+    /// <summary>
+    /// Whether the user has already been told that something failed. One balloon
+    /// per session: a lost graphics device fails every overlay at once, and a queue
+    /// of identical notifications is noise, not information.
+    /// </summary>
+    private bool _failureReported;
+
     public TrayApplicationContext()
     {
+        // Forces the handle onto this thread, which is the UI thread. Without a
+        // handle there is nothing to post to.
+        _ = _uiMarshal.Handle;
+
         _registry = new WindowRegistry(new Win32WindowApi());
 
         _windowsMenu = new ToolStripMenuItem("Windows");
@@ -230,11 +260,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (isNowInverted)
         {
-            InvertOverlayWindow overlay;
+            InvertOverlayWindow overlay = null!;
 
             try
             {
-                overlay = new InvertOverlayWindow(currentRect, hwnd);
+                // The failure callback closes over the very variable being assigned,
+                // because a frame can fail before the constructor returns. That is
+                // safe: the callback only posts, and the posted work runs on the UI
+                // thread after this method has either completed the assignment or
+                // rolled the toggle back - and in the rollback case it finds no
+                // overlay registered for this window and does nothing.
+                overlay = new InvertOverlayWindow(
+                    currentRect,
+                    hwnd,
+                    error => PostToUi(() => HandleOverlayFailure(hwnd, overlay, error)));
             }
             catch (Exception ex)
             {
@@ -270,6 +309,107 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (_titleBarButtons.TryGetValue(hwnd, out var button))
         {
             button.SetToggledVisual(isNowInverted);
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> on the UI thread, asynchronously. Never
+    /// blocks: the caller is usually a thread pool thread holding the capture
+    /// engine's lock, and waiting for a UI thread that may itself be stopping that
+    /// engine would deadlock.
+    /// </summary>
+    private void PostToUi(Action action)
+    {
+        try
+        {
+            if (_uiMarshal.IsDisposed || !_uiMarshal.IsHandleCreated)
+            {
+                return;
+            }
+
+            _uiMarshal.BeginInvoke(action);
+        }
+        catch (Exception ex)
+        {
+            // The handle can be destroyed between the check and the call while the
+            // app is exiting. Nothing to report at that point.
+            Debug.WriteLine($"Posting to the UI thread failed: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Takes down an overlay whose capture or render pipeline has failed, and makes
+    /// the failure visible.
+    /// <para>
+    /// This is the point of the whole failure path. A stalled overlay looks exactly
+    /// like a working one - correctly placed, correctly inverted, perfectly legible,
+    /// and frozen - so the user carries on reading a snapshot while typing into the
+    /// live window underneath it. Removing the overlay makes "not working" look
+    /// different from "working", and leaves the window in a state the user can
+    /// simply toggle again.
+    /// </para>
+    /// <para>
+    /// Runs on the UI thread, posted from a thread pool thread. The identity check
+    /// matters: by the time this runs the user may have toggled the window off and
+    /// on again, and a stale failure must not destroy the replacement overlay.
+    /// </para>
+    /// </summary>
+    private void HandleOverlayFailure(nint hwnd, InvertOverlayWindow failed, Exception error)
+    {
+        if (!_overlays.TryGetValue(hwnd, out var current) || !ReferenceEquals(current, failed))
+        {
+            return;
+        }
+
+        _overlays.Remove(hwnd);
+        _invertedWindows.Remove(hwnd);
+
+        try
+        {
+            failed.Destroy();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Destroying the failed overlay for 0x{hwnd:X} failed: {ex}");
+        }
+
+        if (_titleBarButtons.TryGetValue(hwnd, out var button))
+        {
+            button.SetToggledVisual(false);
+        }
+
+        RebuildWindowsMenu();
+        ReportFailure(error);
+    }
+
+    /// <summary>
+    /// Tells the user, once. Deliberately not <c>Debug.WriteLine</c>, which is
+    /// compiled out of the Release build the user actually runs - the diagnostic
+    /// that only exists in a debug build is not a diagnostic.
+    /// </summary>
+    private void ReportFailure(Exception error)
+    {
+        Debug.WriteLine($"Overlay pipeline failed: {error}");
+
+        if (_failureReported)
+        {
+            return;
+        }
+
+        _failureReported = true;
+
+        try
+        {
+            _trayIcon.ShowBalloonTip(
+                10_000,
+                "Window Invert",
+                "Inverting stopped for a window because the screen capture failed. "
+                + "That window is no longer inverted - switch it on again to retry.",
+                ToolTipIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Showing the failure balloon failed: {ex}");
         }
     }
 
@@ -317,6 +457,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hook.Stop();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _uiMarshal.Dispose();
         base.ExitThreadCore();
     }
 }

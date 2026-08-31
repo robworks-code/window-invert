@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -121,6 +122,29 @@ public sealed class CaptureEngine : IDisposable
     public event Action<CapturedFrame>? FrameArrived;
 
     /// <summary>
+    /// Raised once when the capture callback fails, after which the engine stops
+    /// delivering frames. <see cref="LastCaptureError"/> holds the same exception.
+    /// <para>
+    /// <b>Threading:</b> raised on the thread pool thread that was running the
+    /// callback, under the engine's own lock. Every restriction documented on
+    /// <see cref="FrameArrived"/> applies here too, and the important one is that a
+    /// handler must not call <see cref="Stop"/> or <see cref="Dispose"/> - the very
+    /// thing a failure handler most wants to do. Post the teardown to another
+    /// thread; do not perform it here.
+    /// </para>
+    /// </summary>
+    public event Action<Exception>? CaptureFailed;
+
+    /// <summary>
+    /// The exception that stopped capture, or <see langword="null"/> if capture has
+    /// not failed. Volatile because it is written on a pool thread and read from
+    /// the UI thread without a lock.
+    /// </summary>
+    public Exception? LastCaptureError => _lastCaptureError;
+
+    private volatile Exception? _lastCaptureError;
+
+    /// <summary>
     /// The D3D11 device the frames were captured on, or <see langword="null"/>
     /// before <see cref="Start"/> / after <see cref="Stop"/>.
     /// <para>
@@ -166,6 +190,11 @@ public sealed class CaptureEngine : IDisposable
             {
                 lock (_sync)
                 {
+                    // A restart is a clean slate - the previous failure is history,
+                    // and leaving it readable would make a working engine look
+                    // broken to anything polling LastCaptureError.
+                    _lastCaptureError = null;
+
                     // BgraSupport is required for the Direct2D interop in the render
                     // stage that consumes Device.
                     D3D11.D3D11CreateDevice(
@@ -198,6 +227,16 @@ public sealed class CaptureEngine : IDisposable
                     _framePool.FrameArrived += _frameArrivedHandler;
 
                     _session = _framePool.CreateCaptureSession(_item);
+
+                    // Defaults to true. Left alone, the captured frame contains the
+                    // mouse cursor, the renderer inverts it, and Windows draws the
+                    // real cursor on top of the overlay - so over any inverted
+                    // window the user sees two pointers, the real one and an
+                    // inverted copy a frame behind it. Under magnification, where
+                    // the pointer is the thing being tracked, that is actively
+                    // disorienting rather than cosmetic.
+                    _session.IsCursorCaptureEnabled = false;
+
                     _running = true;
                 }
 
@@ -318,11 +357,28 @@ public sealed class CaptureEngine : IDisposable
         if (_callbackThreadId != 0 && _callbackThreadId == Environment.CurrentManagedThreadId)
         {
             throw new InvalidOperationException(
-                $"{nameof(CaptureEngine)}.{member} must not be called from a {nameof(FrameArrived)} handler. " +
+                $"{nameof(CaptureEngine)}.{member} must not be called from a {nameof(FrameArrived)} " +
+                $"or {nameof(CaptureFailed)} handler. " +
                 "Signal the intent to another thread and stop the engine from there instead.");
         }
     }
 
+    /// <summary>
+    /// The frame callback. Runs on a thread pool thread, so nothing may escape it:
+    /// an unhandled exception on a pool thread terminates the process.
+    /// <para>
+    /// Every call in the body below can genuinely throw - a device-removed or a
+    /// display driver reset invalidates the D3D11 device under
+    /// <c>CreateD3D11Texture2DFromSurface</c> and <c>Recreate</c>, and a window
+    /// closing mid-frame can fail <c>TryGetNextFrame</c> or the surface access. The
+    /// engine stops delivering frames rather than trying to carry on with a broken
+    /// device, and reports the failure so the overlay can be taken down. That
+    /// matters more than it sounds: a stalled overlay is bit-identical on screen to
+    /// a working one over a static window - correctly placed, correctly inverted,
+    /// perfectly legible, and frozen - so without a signal the user goes on reading
+    /// a snapshot while typing into the live window underneath.
+    /// </para>
+    /// </summary>
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
         lock (_sync)
@@ -332,42 +388,39 @@ public sealed class CaptureEngine : IDisposable
                 return;
             }
 
-            SizeInt32 contentSize;
-
+            // Claimed for the whole callback, failure handling included, and not
+            // just for the part that delivers the frame. A CaptureFailed handler
+            // runs on this thread under this same lock, so it is subject to exactly
+            // the same restriction as a FrameArrived handler - and it is far more
+            // likely to want to break it, since the obvious reaction to "capture
+            // failed" is to stop the engine. Releasing the claim before raising the
+            // event would let that call slip past ThrowIfOnCallbackThread and
+            // deadlock later instead of failing immediately. Measured: with the
+            // claim released early, an inline Stop() from a CaptureFailed handler
+            // was accepted.
             _callbackThreadId = Environment.CurrentManagedThreadId;
             try
             {
-                using (var frame = _framePool.TryGetNextFrame())
+                try
                 {
-                    if (frame is null)
-                    {
-                        return;
-                    }
+                    DeliverFrame();
+                }
+                catch (Exception ex)
+                {
+                    _running = false;
+                    _lastCaptureError = ex;
+                    Debug.WriteLine($"{nameof(CaptureEngine)}: capture stopped - {ex}");
 
-                    contentSize = frame.ContentSize;
-
-                    // IDirect3DSurface projects WinRT's IClosable as IDisposable, so
-                    // the wrapper this property hands back is ours to release - the
-                    // same inherited-member trap that hid IDirect3DDevice's
-                    // IDisposable, and equally invisible in a declared-member dump.
-                    using var surface = frame.Surface;
-
-                    var texture = Direct3D11Helper.CreateD3D11Texture2DFromSurface(surface);
                     try
                     {
-                        // ContentSize, not the texture's own size: the pool's buffers
-                        // only ever grow, so the texture can be larger than the live
-                        // content and carry stale pixels in the padding. See CapturedFrame.
-                        FrameArrived?.Invoke(new CapturedFrame(texture, contentSize.Width, contentSize.Height));
+                        CaptureFailed?.Invoke(ex);
                     }
-                    finally
+                    catch (Exception handlerEx)
                     {
-                        // Disposal is idempotent, so a handler that also disposes the
-                        // texture (taking the ownership the event's lifetime contract
-                        // offers) is fine; this guarantees the release either way,
-                        // which at capture frame rates is the difference between
-                        // steady state and exhausting video memory in seconds.
-                        texture.Dispose();
+                        // A throwing failure handler would escape this thread pool
+                        // thread and become exactly the process kill this guard
+                        // exists to prevent.
+                        Debug.WriteLine($"{nameof(CaptureEngine)}: {nameof(CaptureFailed)} handler threw - {handlerEx}");
                     }
                 }
             }
@@ -375,28 +428,72 @@ public sealed class CaptureEngine : IDisposable
             {
                 _callbackThreadId = 0;
             }
+        }
+    }
 
-            // Re-read the state rather than trusting what was captured above. The
-            // guard in ThrowIfOnCallbackThread should make it impossible to arrive
-            // here torn down, but a handler that *swallowed* that InvalidOperationException
-            // would resume right here - so this stays defensive rather than relying on
-            // an exception nobody caught.
-            var pool = _framePool;
-            if (!_running || pool is null || _winrtDevice is null)
+    /// <summary>
+    /// One frame, start to finish. Callers must hold <see cref="_sync"/> and must
+    /// already have claimed <see cref="_callbackThreadId"/>; every failure is the
+    /// caller's to handle.
+    /// </summary>
+    private void DeliverFrame()
+    {
+        SizeInt32 contentSize;
+
+        using (var frame = _framePool!.TryGetNextFrame())
+        {
+                if (frame is null)
             {
                 return;
             }
 
-            // The frame pool's buffers are a fixed size, so a resized window would
-            // otherwise keep arriving cropped or letterboxed into the original
-            // dimensions. Recreate has to happen after the frame is disposed.
-            if (contentSize.Width > 0
-                && contentSize.Height > 0
-                && (contentSize.Width != _poolSize.Width || contentSize.Height != _poolSize.Height))
+            contentSize = frame.ContentSize;
+
+            // IDirect3DSurface projects WinRT's IClosable as IDisposable, so
+            // the wrapper this property hands back is ours to release - the
+            // same inherited-member trap that hid IDirect3DDevice's
+            // IDisposable, and equally invisible in a declared-member dump.
+            using var surface = frame.Surface;
+
+            var texture = Direct3D11Helper.CreateD3D11Texture2DFromSurface(surface);
+            try
             {
-                _poolSize = contentSize;
-                pool.Recreate(_winrtDevice, PixelFormat, FramePoolBufferCount, contentSize);
+                // ContentSize, not the texture's own size: the pool's buffers
+                // only ever grow, so the texture can be larger than the live
+                // content and carry stale pixels in the padding. See CapturedFrame.
+                FrameArrived?.Invoke(new CapturedFrame(texture, contentSize.Width, contentSize.Height));
             }
+            finally
+            {
+                // Disposal is idempotent, so a handler that also disposes the
+                // texture (taking the ownership the event's lifetime contract
+                // offers) is fine; this guarantees the release either way,
+                // which at capture frame rates is the difference between
+                // steady state and exhausting video memory in seconds.
+                texture.Dispose();
+            }
+        }
+
+        // Re-read the state rather than trusting what was captured above. The
+        // guard in ThrowIfOnCallbackThread should make it impossible to arrive
+        // here torn down, but a handler that *swallowed* that InvalidOperationException
+        // would resume right here - so this stays defensive rather than relying on
+        // an exception nobody caught.
+        var pool = _framePool;
+        if (!_running || pool is null || _winrtDevice is null)
+        {
+            return;
+        }
+
+        // The frame pool's buffers are a fixed size, so a resized window would
+        // otherwise keep arriving cropped or letterboxed into the original
+        // dimensions. Recreate has to happen after the frame is disposed.
+        if (contentSize.Width > 0
+            && contentSize.Height > 0
+            && (contentSize.Width != _poolSize.Width || contentSize.Height != _poolSize.Height))
+        {
+            _poolSize = contentSize;
+            pool.Recreate(_winrtDevice, PixelFormat, FramePoolBufferCount, contentSize);
         }
     }
 }
