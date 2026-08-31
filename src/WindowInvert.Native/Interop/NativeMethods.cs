@@ -60,6 +60,15 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern nint GetWindow(nint hWnd, uint uCmd);
 
+    /// <summary>
+    /// Note <c>hWndInsertAfter</c>: it is the window that must <i>precede</i>
+    /// <paramref name="hWnd"/> in the z-order, so <paramref name="hWnd"/> ends up
+    /// <b>below</b> it. Measured, because the name reads the other way round.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(
+        nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
     [DllImport("user32.dll")]
     public static extern nint WindowFromPoint(System.Drawing.Point Point);
 
@@ -72,7 +81,16 @@ internal static class NativeMethods
     public static extern bool UnhookWinEvent(nint hWinEventHook);
 
     public const uint GA_ROOT = 2;
+
+    /// <summary>The window directly <i>above</i> the given one in the z-order.</summary>
+    public const uint GW_HWNDPREV = 3;
+
     public const uint GW_OWNER = 4;
+
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 

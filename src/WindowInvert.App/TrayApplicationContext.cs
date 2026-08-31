@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using WindowInvert.Core.Geometry;
 using WindowInvert.Core.InvertState;
+using WindowInvert.Core.Stacking;
 using WindowInvert.Core.WindowTracking;
 using WindowInvert.Native;
 
@@ -106,7 +107,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 button.Reposition(info.Rect);
             }
+
+            RestackWindow(info.Hwnd);
         };
+
+        // Activating a window raises it above the overlay and toggle button that
+        // belong to it - they cannot be owned by it, because window ownership does
+        // not cross a process boundary, so Windows will not carry them along. This
+        // is where they are put back. The event was previously plumbed all the way
+        // to the registry and then discarded.
+        _registry.WindowForegroundChanged += RestackWindow;
 
         _registry.WindowVisibilityChanged += info =>
         {
@@ -177,6 +187,41 @@ internal sealed class TrayApplicationContext : ApplicationContext
         button.SetToggledVisual(_invertedWindows.IsInverted(info.Hwnd));
         button.Show();
         _titleBarButtons[info.Hwnd] = button;
+        RestackWindow(info.Hwnd);
+    }
+
+    /// <summary>
+    /// Re-asserts that <paramref name="sourceHwnd"/>'s toggle button sits directly
+    /// above its overlay, which sits directly above the window itself.
+    /// <para>
+    /// The stack is built downwards from the window currently above the source,
+    /// because Win32 only offers "place this below that" - <c>SetWindowPos</c>'s
+    /// <c>hWndInsertAfter</c> names the window that precedes the positioned one.
+    /// Handing it the source directly would put the overlay <i>under</i> the window
+    /// it is inverting, where nothing would ever be visible. Measured, not assumed.
+    /// </para>
+    /// <para>
+    /// Cheap enough to call on every foreground change and every geometry change:
+    /// it is at most two <c>SetWindowPos</c> calls, and none at all for a window
+    /// with neither surface.
+    /// </para>
+    /// </summary>
+    private void RestackWindow(nint sourceHwnd)
+    {
+        var overlayHandle = _overlays.TryGetValue(sourceHwnd, out var overlay) ? overlay.Handle : 0;
+        var buttonHandle = _titleBarButtons.TryGetValue(sourceHwnd, out var button) ? button.Handle : 0;
+
+        if (overlayHandle == 0 && buttonHandle == 0)
+        {
+            return;
+        }
+
+        var anchor = WindowStacking.GetWindowAbove(sourceHwnd);
+
+        foreach (var placement in OverlayStacking.PlanRestack(anchor, overlayHandle, buttonHandle))
+        {
+            WindowStacking.InsertBelow(placement.Hwnd, placement.PlaceBelow);
+        }
     }
 
     private void ToggleInvert(nint hwnd, WindowRect currentRect)
@@ -210,6 +255,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             overlay.Show();
             _overlays[hwnd] = overlay;
+
+            // Straight away, not only on the next move or resize. The overlay was
+            // created after the toggle button, so without this the button spends the
+            // interval buried under the overlay it just produced - and the button's
+            // toggled colour is the only on-screen confirmation that invert is on.
+            RestackWindow(hwnd);
         }
         else if (_overlays.Remove(hwnd, out var overlay))
         {

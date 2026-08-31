@@ -19,13 +19,7 @@ internal sealed class InvertOverlayWindow : NativeWindow
     private static extern bool SetLayeredWindowAttributes(nint hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
     [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
-
-    [DllImport("user32.dll")]
     private static extern bool ShowWindow(nint hWnd, int nCmdShow);
-
-    private static readonly nint HWND_TOPMOST = new(-1);
-    private const uint SWP_NOACTIVATE = 0x0010;
 
     private readonly Native.CaptureEngine _captureEngine = new();
     private readonly Native.InvertRenderer _renderer = new();
@@ -63,12 +57,18 @@ internal sealed class InvertOverlayWindow : NativeWindow
         // underneath). DirectComposition explicitly supports a layered target.
         SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
 
-        // Place into the topmost z-order band immediately on creation.
-        // Without this, the overlay starts as an ordinary window and only
-        // gets promoted to topmost on the source window's *next* move/resize
-        // (via Reposition), so activating the source window right after
-        // toggle-on would restack it above the overlay in the meantime.
-        SetWindowPos(Handle, HWND_TOPMOST, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height, SWP_NOACTIVATE);
+        // Deliberately NOT placed in the topmost band, and never given
+        // WS_EX_TOPMOST. This window shows a live copy of one other window; putting
+        // it in the topmost band made it float over every unrelated window on the
+        // screen, and because it is click-through the user could end up reading one
+        // window while typing into the one underneath. Its z-order is instead
+        // asserted relative to its own source by the owner of both handles - see
+        // TrayApplicationContext.RestackWindow - which is also what puts the toggle
+        // button back on top of it.
+        //
+        // The window is created without WS_EX_TOPMOST, so there is no stale style
+        // to clear; and a window inserted below a non-topmost window loses topmost
+        // status anyway, so the restack itself is self-correcting.
 
         try
         {
@@ -120,11 +120,19 @@ internal sealed class InvertOverlayWindow : NativeWindow
         }
     }
 
+    /// <summary>
+    /// Matches the overlay to its source's new geometry. Leaves the z-order alone -
+    /// restacking is a separate pass with a defined order between the overlay and
+    /// the toggle button, and doing it here would fight that.
+    /// </summary>
     public void Reposition(WindowRect sourceRect)
     {
         var overlayRect = OverlayGeometry.ComputeOverlayRect(sourceRect);
-        SetWindowPos(Handle, HWND_TOPMOST, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height, SWP_NOACTIVATE);
+        Native.WindowStacking.MoveTo(Handle, overlayRect.X, overlayRect.Y, overlayRect.Width, overlayRect.Height);
     }
+
+    /// <summary>Puts this overlay directly below <paramref name="placeBelow"/>.</summary>
+    public void InsertBelow(nint placeBelow) => Native.WindowStacking.InsertBelow(Handle, placeBelow);
 
     public void Show() => ShowWindow(Handle, SW_SHOW);
 

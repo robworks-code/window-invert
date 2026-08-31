@@ -15,9 +15,6 @@ internal sealed class TitleBarButtonWindow : NativeWindow
     private const int SW_HIDE = 0;
 
     [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
-
-    [DllImport("user32.dll")]
     private static extern bool ShowWindow(nint hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
@@ -25,9 +22,6 @@ internal sealed class TitleBarButtonWindow : NativeWindow
 
     [DllImport("user32.dll")]
     private static extern bool ValidateRect(nint hWnd, nint lpRect);
-
-    private static readonly nint HWND_TOPMOST = new(-1);
-    private const uint SWP_NOACTIVATE = 0x0010;
 
     private readonly Action _onClicked;
     private bool _isToggled;
@@ -49,19 +43,28 @@ internal sealed class TitleBarButtonWindow : NativeWindow
 
         CreateHandle(cp);
 
-        // Place into the topmost z-order band immediately on creation.
-        // Without this, the button starts as an ordinary window and only
-        // gets promoted to topmost on the source window's *next* move/resize
-        // (via Reposition), so activating the source window right after
-        // creation would restack it above the button in the meantime.
-        SetWindowPos(Handle, HWND_TOPMOST, buttonRect.X, buttonRect.Y, buttonRect.Width, buttonRect.Height, SWP_NOACTIVATE);
+        // No topmost band. The button belongs to one window and should be occluded
+        // whenever that window is; its z-order is asserted relative to the source
+        // and the overlay by TrayApplicationContext.RestackWindow. Both windows
+        // used to be topmost, and since SetWindowPos moves a window to the top of
+        // that band on every call, the overlay - created later, at toggle time -
+        // landed on top of the button and hid it. The user pressed the button to
+        // invert and the button disappeared, taking with it the only feedback that
+        // invert was on, until the window was next moved.
     }
 
+    /// <summary>
+    /// Matches the button to its source's new geometry, leaving the z-order to the
+    /// separate restack pass that orders it against the overlay.
+    /// </summary>
     public void Reposition(WindowRect sourceRect)
     {
         var buttonRect = OverlayGeometry.ComputeTitleBarButtonRect(sourceRect, ButtonSize);
-        SetWindowPos(Handle, HWND_TOPMOST, buttonRect.X, buttonRect.Y, buttonRect.Width, buttonRect.Height, SWP_NOACTIVATE);
+        Native.WindowStacking.MoveTo(Handle, buttonRect.X, buttonRect.Y, buttonRect.Width, buttonRect.Height);
     }
+
+    /// <summary>Puts this button directly below <paramref name="placeBelow"/>.</summary>
+    public void InsertBelow(nint placeBelow) => Native.WindowStacking.InsertBelow(Handle, placeBelow);
 
     public void SetToggledVisual(bool isToggled)
     {
