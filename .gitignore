@@ -424,7 +424,11 @@ test-results/
 
 # Mac bundle stuff
 *.dmg
-*.app
+# NOTE: the standard template's "*.app" rule is deliberately removed here -
+# on Windows (core.ignorecase=true) it case-insensitively matches this
+# project's own src/WindowInvert.App directory, silently hiding new files
+# under it from git status/add. This project has no macOS .app bundle to
+# ignore anyway.
 
 # content below from: https://github.com/github/gitignore/blob/master/Global/macOS.gitignore
 # General
