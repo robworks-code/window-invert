@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using WindowInvert.Core.Geometry;
 
@@ -87,10 +88,35 @@ internal sealed class InvertOverlayWindow : NativeWindow
             // window for the rest of the process's life with no way to clear it, plus
             // an orphaned topmost click-through HWND that nothing will ever destroy.
             // Same order as Destroy(): stop producing, then tear down the consumer.
-            _captureEngine.Dispose();
-            _renderer.Dispose();
+            //
+            // Each release is guarded separately, because a cleanup path that can
+            // itself fail is not a cleanup path. Closing a WinRT capture session or
+            // frame pool can throw an RPC/COM error, and an escape from the first
+            // Dispose would skip DestroyHandle and leave behind exactly the orphaned
+            // topmost window this block exists to prevent - while also replacing the
+            // real failure with a less informative one. The original exception is the
+            // one that propagates.
+            SafeDispose(_captureEngine, nameof(_captureEngine));
+            SafeDispose(_renderer, nameof(_renderer));
             DestroyHandle();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Releases <paramref name="disposable"/> without letting a failure there
+    /// escape. Only for constructor rollback, where an escaping exception would
+    /// skip the rest of the cleanup and mask the real failure.
+    /// </summary>
+    private static void SafeDispose(IDisposable disposable, string what)
+    {
+        try
+        {
+            disposable.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"{nameof(InvertOverlayWindow)}: disposing {what} during rollback failed: {ex}");
         }
     }
 

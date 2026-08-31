@@ -31,6 +31,20 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(nint hWnd, out RECT lpRect);
 
+    /// <summary>
+    /// <c>DWMWA_EXTENDED_FRAME_BOUNDS</c>. Asks DWM for the window's <i>visible</i>
+    /// frame, excluding the invisible resize border that
+    /// <see cref="GetWindowRect"/> includes on Windows 10 and later.
+    /// </summary>
+    public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+    /// <summary>
+    /// Returns an HRESULT rather than a BOOL, so callers must compare against
+    /// <c>S_OK</c> (0) rather than treating any value as success.
+    /// </summary>
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(nint hWnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowTextLength(nint hWnd);
 

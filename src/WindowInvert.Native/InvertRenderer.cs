@@ -268,6 +268,16 @@ public sealed class InvertRenderer : IDisposable
                         96f,
                         BitmapOptions.Target | BitmapOptions.CannotDraw));
 
+                // A frame can legitimately arrive with no content - the engine guards
+                // its own pool Recreate on exactly this - and clamping that up to 1x1
+                // would magnify a single pixel across the whole overlay, painting a
+                // full-surface block of whatever colour that pixel happened to be.
+                // Skipping the frame leaves the previous one on screen instead.
+                if (frame.ContentWidth <= 0 || frame.ContentHeight <= 0)
+                {
+                    return;
+                }
+
                 // The live content, never the buffer. The frame pool's buffers only
                 // grow, so the texture can be bigger than the window and carry stale
                 // pixels past the content edge; drawing those would both show garbage
@@ -285,14 +295,21 @@ public sealed class InvertRenderer : IDisposable
 
                 // Both bitmaps are 96 DPI, so one DIP is one pixel throughout.
                 //
-                // The overlay is sized from the source's GetWindowRect, which includes
-                // the invisible resize border and so does not generally equal the
-                // DWM-composed content. Rather than stretch to hide that, the content
-                // is scaled *uniformly* and centred: a wrong aspect ratio is worse
-                // than a letterbox, and this output is read under screen magnification,
-                // where any resampling of text is amplified. The exact-match case -
-                // the overwhelmingly common one - takes the identity transform, so it
-                // is a pixel-for-pixel copy with no resampling whatsoever.
+                // The overlay is sized from the source window's DWM extended frame
+                // bounds, which is the same visible region Windows.Graphics.Capture
+                // composes, so for an ordinary window the two match exactly and this
+                // takes the identity transform - a pixel-for-pixel copy with no
+                // resampling at all. Measured on a normal resizable window: capture
+                // content, extended frame bounds and overlay client area all agree,
+                // while GetWindowRect is 14 px wider and 7 px taller (the invisible
+                // resize border), which is what the overlay used to be sized from.
+                //
+                // The scaled path below is the safety net for the cases where they
+                // still disagree - mid-resize, or a window whose frame DWM reports
+                // differently. It scales *uniformly* and centres rather than
+                // stretching: a wrong aspect ratio is worse than a letterbox, and this
+                // output is read under screen magnification, where any resampling of
+                // text is amplified.
                 var exact = contentWidth == _swapChainWidth && contentHeight == _swapChainHeight;
                 if (exact)
                 {
@@ -314,9 +331,20 @@ public sealed class InvertRenderer : IDisposable
 
                 // The image rectangle crops the effect output to the live content, so
                 // the pool's padding is never sampled - including by the interpolator
-                // at the content edge.
+                // at the content edge. It is only available on the ID2D1Image
+                // overload, hence going through Output rather than passing the effect
+                // directly.
+                //
+                // Output must be disposed: Vortice's GetOutput allocates a fresh
+                // wrapper over the AddRef'd native pointer on every call and caches
+                // nothing, so dropping it would leak a critical-finalizable COM
+                // wrapper per frame - about 60 a second per overlay - and delay the
+                // native teardown after toggle-off. Vortice's own DrawImage(effect)
+                // overloads dispose it in a finally for the same reason.
+                using var effectOutput = _invertEffect.Output;
+
                 _d2dContext.DrawImage(
-                    _invertEffect.Output,
+                    effectOutput,
                     Vector2.Zero,
                     new Vortice.RawRectF(0f, 0f, contentWidth, contentHeight),
                     InterpolationMode.Linear,
