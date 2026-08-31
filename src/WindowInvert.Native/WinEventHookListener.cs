@@ -23,7 +23,7 @@ public sealed class WinEventHookListener
             _callback,
             idProcess: 0,
             idThread: 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT);
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
     }
 
     public void Stop()

@@ -57,6 +57,7 @@ internal static class NativeMethods
     public const uint GA_ROOT = 2;
     public const uint GW_OWNER = 4;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
