@@ -315,11 +315,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         // Nothing this method does is worth doing while the tray menu is open,
         // and doing it is actively harmful: every call reorders the topmost band
-        // underneath a menu that is itself a topmost popup. Refusing the close
-        // (see HandleMenuClosing) stops the menu disappearing, but the churn
-        // beneath it remains a real cost - the surfaces being reordered are
-        // behind the menu the user is reading. The skipped work is applied in one
-        // pass when the menu closes.
+        // underneath a menu that is itself a topmost popup. The menu now survives
+        // that (see MagnifiableContextMenuStrip), but the churn beneath it
+        // remains a real cost - the surfaces being reordered are behind the menu
+        // the user is reading. The skipped work is applied in one pass when the
+        // menu closes.
         if (_menu.Visible)
         {
             Diagnostics.Log($"RESTACK skipped (menu open) source=0x{sourceHwnd:X}");
@@ -457,39 +457,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// dozens of foreground changes.
     /// </para>
     /// <para>
-    /// So the Alt problem is solved where it starts, by refusing the keystroke in
-    /// <see cref="MagnifiableContextMenuStrip"/> before a close is ever
-    /// initiated, and the causes that were this app's own doing are fixed at
-    /// source: the tray overflow flyout is no longer tracked, and restacking is
-    /// suspended while the menu is open.
-    /// </para>
-    /// </summary>
-    /// <para>
-    /// Measured, not assumed. A trace of a live session showed the menu opening,
-    /// staying up for six seconds, and then dying two milliseconds after the
-    /// system tray overflow flyout took the foreground back -
-    /// <c>reason=AppFocusChange</c>. The flyout is unavoidable here: it is where
-    /// this app's icon lives until it is promoted onto the taskbar, so it has to
-    /// be open for the icon to be right-clicked at all, and it and the menu then
-    /// trade the foreground between them. Unrelated applications do the same
-    /// thing on their own schedule - a smart-home tray app on the test machine
-    /// grabbed the foreground by itself, which is enough to close the menu
-    /// mid-use with nothing on screen to explain it.
+    /// So the menu is kept alive one step earlier instead, in
+    /// <see cref="MagnifiableContextMenuStrip"/>: Alt is refused as a keystroke
+    /// before any close is initiated, and <c>AutoClose</c> is off so a foreground
+    /// change never asks for one. The causes that were this app's own doing are
+    /// fixed at source - the tray overflow flyout is no longer tracked, and
+    /// restacking is suspended while the menu is open.
     /// </para>
     /// <para>
-    /// This is worse than an annoyance for the users this application is for.
-    /// Working through a magnified viewport means crossing the screen in
-    /// sections to reach the menu and read down it; a menu that can vanish at
-    /// any moment because an unrelated program woke up is one that cannot be
-    /// used at all. The reported symptom was exactly that - never getting as far
-    /// as selecting anything.
-    /// </para>
-    /// <para>
-    /// Only <c>AppFocusChange</c> is refused. Clicking away
-    /// (<c>AppClicked</c>), pressing Escape (<c>Keyboard</c>), choosing an item
-    /// (<c>ItemClicked</c>) and closing it in code (<c>CloseCalled</c>) all still
-    /// work, so the menu is never stuck - it just no longer treats another
-    /// program's activity as an instruction to disappear.
+    /// Kept because the reason code is still the only way to tell an intended
+    /// dismissal from another one appearing from somewhere unexamined.
     /// </para>
     /// </summary>
     private static void HandleMenuClosing(object? sender, ToolStripDropDownClosingEventArgs e)
