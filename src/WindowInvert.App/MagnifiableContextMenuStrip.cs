@@ -43,6 +43,12 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
 
     private nint _mouseHook;
 
+    /// <summary>
+    /// True while a dismissal this class initiated is closing the menu. See
+    /// <see cref="Dismiss"/>.
+    /// </summary>
+    private bool _dismissalRequested;
+
     public MagnifiableContextMenuStrip()
     {
         _mouseProc = HandleLowLevelMouse;
@@ -109,7 +115,12 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
         {
             if (!ReferenceEquals(other, entered) && other.HasDropDownItems && other.DropDown.Visible)
             {
-                other.HideDropDown();
+                // Close(), not HideDropDown(): the submenu is non-AutoClose, and
+                // HideDropDown routes through the veto described at Dismiss with a
+                // reason that is not exempt, so it would be silently refused.
+                // An argumentless Close() carries CloseCalled, the one reason
+                // WinForms never pre-cancels.
+                other.DropDown.Close();
             }
         }
 
@@ -135,7 +146,59 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
             return;
         }
 
-        Close(ToolStripDropDownCloseReason.ItemClicked);
+        Dismiss(ToolStripDropDownCloseReason.ItemClicked);
+    }
+
+    /// <summary>
+    /// Closes the menu on behalf of one of this class's own dismissal gestures.
+    /// <para>
+    /// It cannot simply call <see cref="ToolStripDropDown.Close(ToolStripDropDownCloseReason)"/>:
+    /// WinForms pre-cancels the close of a non-<c>AutoClose</c> drop-down for
+    /// every reason except <c>CloseCalled</c> -
+    /// <c>e.Cancel = e.CloseReason != CloseCalled &amp;&amp; !AutoClose</c> in
+    /// <c>SetVisibleCore</c> - and that veto makes no distinction between the
+    /// stock behaviour being opted out of and a close this class asked for
+    /// itself. The first shipped version of this menu did call <c>Close</c>
+    /// directly, and a trace showed every dismissal being initiated and none
+    /// completing: closing lines with no closed line, and a menu that never
+    /// went away.
+    /// </para>
+    /// <para>
+    /// So the request is flagged, and <see cref="OnClosing"/> clears the
+    /// pre-set cancellation for exactly these closes. Passing the real reason
+    /// through, rather than hiding behind an argumentless <c>Close()</c>, keeps
+    /// the close reason honest in the trace - which is the only instrument that
+    /// has caught any of this menu's failures.
+    /// </para>
+    /// </summary>
+    private void Dismiss(ToolStripDropDownCloseReason reason)
+    {
+        _dismissalRequested = true;
+
+        try
+        {
+            Close(reason);
+        }
+        finally
+        {
+            _dismissalRequested = false;
+        }
+    }
+
+    /// <summary>
+    /// Lets this class's own dismissals through the veto described at
+    /// <see cref="Dismiss"/>. Only closes flagged there are un-cancelled:
+    /// WinForms' own attempts - the foreground-change closes this menu exists
+    /// to survive - arrive with the same pre-set cancellation and keep it.
+    /// </summary>
+    protected override void OnClosing(ToolStripDropDownClosingEventArgs e)
+    {
+        if (_dismissalRequested)
+        {
+            e.Cancel = false;
+        }
+
+        base.OnClosing(e);
     }
 
     protected override void OnOpening(CancelEventArgs e)
@@ -157,11 +220,13 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
         // Closing the root does not reliably take a submenu with it once that
         // submenu has AutoClose off, and a stranded Windows list floating alone
         // over the desktop is the failure this whole class exists to avoid.
+        // Close() rather than HideDropDown() for the reason given in
+        // HandleItemMouseEnter: only CloseCalled passes the non-AutoClose veto.
         foreach (var item in Items.OfType<ToolStripMenuItem>())
         {
             if (item.HasDropDownItems && item.DropDown.Visible)
             {
-                item.HideDropDown();
+                item.DropDown.Close();
             }
         }
 
@@ -243,7 +308,7 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
                 if (!IsInsideMenu(point) && IsHandleCreated)
                 {
                     Diagnostics.Log($"MENU dismissed by outside click at {point.X},{point.Y}");
-                    BeginInvoke(() => Close(ToolStripDropDownCloseReason.AppClicked));
+                    BeginInvoke(() => Dismiss(ToolStripDropDownCloseReason.AppClicked));
                 }
             }
         }
@@ -353,7 +418,7 @@ internal sealed class MagnifiableContextMenuStrip : ContextMenuStrip
 
         if (keyData == Keys.Escape)
         {
-            Close(ToolStripDropDownCloseReason.Keyboard);
+            Dismiss(ToolStripDropDownCloseReason.Keyboard);
             return true;
         }
 

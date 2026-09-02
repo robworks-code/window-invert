@@ -471,8 +471,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// </summary>
     private static void HandleMenuClosing(object? sender, ToolStripDropDownClosingEventArgs e)
     {
+        // Cancel is logged because it arrives PRE-SET: WinForms cancels every
+        // close of a non-AutoClose drop-down except CloseCalled before this
+        // event is even raised. A trace full of closing lines with cancelled=True
+        // and no closed line is that veto at work, not a rogue subscriber - it
+        // cost a day to learn the difference.
         Diagnostics.Log(
-            $"MENU closing reason={e.CloseReason} modifiers={Control.ModifierKeys}");
+            $"MENU closing reason={e.CloseReason} cancelled={e.Cancel} modifiers={Control.ModifierKeys}");
     }
 
     /// <summary>

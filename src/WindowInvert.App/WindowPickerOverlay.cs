@@ -12,6 +12,9 @@ internal sealed class WindowPickerOverlay : NativeWindow
     private const int WM_SETCURSOR = 0x0020;
     private const int WM_LBUTTONUP = 0x0202;
     private const int WM_RBUTTONUP = 0x0205;
+    private const int WM_HOTKEY = 0x0312;
+    private const int VK_ESCAPE = 0x1B;
+    private const int EscapeHotKeyId = 1;
     private const uint LWA_ALPHA = 0x2;
     private const int SW_SHOW = 5;
     private const uint GA_ROOT = 2;
@@ -74,6 +77,12 @@ internal sealed class WindowPickerOverlay : NativeWindow
     [DllImport("user32.dll")]
     private static extern bool ValidateRect(nint hWnd, nint lpRect);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(nint hWnd, int id);
+
     private static readonly nint HWND_TOPMOST = new(-1);
     private const uint SWP_NOACTIVATE = 0x0010;
 
@@ -107,6 +116,20 @@ internal sealed class WindowPickerOverlay : NativeWindow
         // and something already in the topmost band - a notification toast, a media
         // OSD - would otherwise sit on top of it and take the click.
         SetWindowPos(Handle, HWND_TOPMOST, bounds.X, bounds.Y, bounds.Width, bounds.Height, SWP_NOACTIVATE);
+
+        // Escape has to come in as a hotkey because this window can never hold
+        // the keyboard focus: it is WS_EX_NOACTIVATE by design, so an ordinary
+        // key message will never reach it. A hotkey is delivered regardless of
+        // focus, and holding one for these few seconds is proportionate - the
+        // mode is already swallowing every click on the desktop, so claiming
+        // the key that conventionally means "get me out of this mode" is part
+        // of the same contract, not an overreach. Right-click remains the
+        // fallback if another application got to the key first.
+        if (!RegisterHotKey(Handle, EscapeHotKeyId, 0, VK_ESCAPE))
+        {
+            Diagnostics.Log(
+                $"PICKER Escape hotkey unavailable (error {Marshal.GetLastWin32Error()}); right-click still cancels");
+        }
     }
 
     public void Show() => ShowWindow(Handle, SW_SHOW);
@@ -145,7 +168,7 @@ internal sealed class WindowPickerOverlay : NativeWindow
 
             case WM_LBUTTONUP:
                 GetCursorPos(out var screenPoint);
-                DestroyHandle();
+                Dismantle();
 
                 var hit = WindowFromPoint(screenPoint);
                 if (hit != 0)
@@ -161,14 +184,30 @@ internal sealed class WindowPickerOverlay : NativeWindow
                 return;
 
             case WM_RBUTTONUP:
-                // The only way out without picking something. Escape is not
-                // available: the window is WS_EX_NOACTIVATE and never takes focus,
-                // so it never receives a key message.
-                DestroyHandle();
+                Dismantle();
+                _onCancelled();
+                return;
+
+            case WM_HOTKEY when m.WParam == EscapeHotKeyId:
+                // Registered in the constructor, because Escape cannot arrive as
+                // a key message - this window never takes focus.
+                Dismantle();
                 _onCancelled();
                 return;
         }
 
         base.WndProc(ref m);
+    }
+
+    /// <summary>
+    /// Takes the mode down: releases the Escape hotkey, then the window. The
+    /// hotkey is global state borrowed from the whole desktop, so every exit
+    /// path returns it - leaking it would leave Escape dead everywhere until
+    /// the process ends.
+    /// </summary>
+    private void Dismantle()
+    {
+        UnregisterHotKey(Handle, EscapeHotKeyId);
+        DestroyHandle();
     }
 }
