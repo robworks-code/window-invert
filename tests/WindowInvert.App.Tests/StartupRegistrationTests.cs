@@ -101,6 +101,45 @@ public sealed class StartupRegistrationTests : IDisposable
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void RefreshIfStale_WhenNotEnabled_WritesNothing()
+    {
+        var refreshed = StartupRegistration.RefreshIfStale();
+
+        Assert.False(refreshed);
+        Assert.False(StartupRegistration.IsEnabled);
+    }
+
+    [Fact]
+    public void RefreshIfStale_WhenRegisteredPathIsCurrent_LeavesItAlone()
+    {
+        StartupRegistration.Enable();
+
+        var refreshed = StartupRegistration.RefreshIfStale();
+
+        Assert.False(refreshed);
+    }
+
+    [Fact]
+    public void RefreshIfStale_WhenRegisteredPathPointsElsewhere_RewritesItToTheRunningExe()
+    {
+        // The shape the installer creates: a registration written by a copy of the
+        // app that ran from a build output directory, now superseded by the
+        // installed copy. The old path may no longer exist at all.
+        using (var key = Registry.CurrentUser.CreateSubKey(_throwawayKeyPath))
+        {
+            key.SetValue("WindowInvertTest", @"""C:\old\place\WindowInvert.App.exe""",
+                RegistryValueKind.String);
+        }
+
+        var refreshed = StartupRegistration.RefreshIfStale();
+
+        Assert.True(refreshed);
+        using var readBack = Registry.CurrentUser.OpenSubKey(_throwawayKeyPath, writable: false);
+        var value = readBack!.GetValue("WindowInvertTest") as string;
+        Assert.Equal($"\"{Environment.ProcessPath}\"", value);
+    }
+
     public void Dispose()
     {
         StartupRegistration.RunKeyPath = _originalRunKeyPath;

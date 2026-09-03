@@ -9,12 +9,30 @@
     <InternalsVisibleTo Include="WindowInvert.App.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The tray icon, loaded by TrayApplicationContext.LoadTrayIcon. -->
+    <EmbeddedResource Include="..\..\assets\WindowInvert.ico" LogicalName="WindowInvert.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      The one place the version lives. build/release.ps1 reads it from here and
+      hands it to the installer script, so bumping it is a one-line change.
+    -->
+    <Version>0.1.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Product>Window Invert</Product>
+    <AssemblyTitle>Window Invert</AssemblyTitle>
+    <Company>Ryan Robson</Company>
+    <Copyright>Copyright (c) 2026 Ryan Robson</Copyright>
+    <Description>Inverts the colors of individual chosen windows.</Description>
+    <ApplicationIcon>..\..\assets\WindowInvert.ico</ApplicationIcon>
 
     <!--
       ApplicationConfiguration.Initialize() defaults to HighDpiMode.SystemAware,

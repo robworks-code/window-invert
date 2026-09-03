@@ -105,6 +105,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_windowsMenu);
         _menu.Items.Add(new ToolStripSeparator());
 
+        try
+        {
+            // An install over a copy that registered itself from somewhere else
+            // (a build directory, an older install location) would otherwise leave
+            // logon launching that other copy.
+            StartupRegistration.RefreshIfStale();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Refreshing the start-with-Windows registration failed: {ex}");
+        }
+
         var startupItem = new ToolStripMenuItem("Start with Windows")
         {
             Checked = StartupRegistration.IsEnabled,
@@ -146,7 +158,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadTrayIcon(),
             Text = "Window Invert",
             Visible = true,
             ContextMenuStrip = _menu,
@@ -774,6 +786,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
             "Inverting stopped for a window because the screen capture failed. "
             + "That window is no longer inverted - switch it on again to retry.",
             ToolTipIcon.Warning);
+    }
+
+    /// <summary>
+    /// The application icon, at the size the notification area draws it. The .ico
+    /// carries a separate drawing per size, and asking for the small-icon size lets
+    /// the Icon constructor pick the one that matches this monitor's DPI rather
+    /// than shrinking a large one.
+    /// </summary>
+    private static Icon LoadTrayIcon()
+    {
+        using var stream = typeof(TrayApplicationContext).Assembly
+            .GetManifestResourceStream("WindowInvert.ico")
+            ?? throw new InvalidOperationException("WindowInvert.ico is not embedded in the assembly.");
+        return new Icon(stream, SystemInformation.SmallIconSize);
     }
 
     private void ShowBalloon(string text, ToolTipIcon icon)
