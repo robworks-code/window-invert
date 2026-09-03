@@ -29,7 +29,7 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>Window Invert</Product>
     <AssemblyTitle>Window Invert</AssemblyTitle>
-    <Company>Ryan Robson</Company>
+    <Company>Robworks Software</Company>
     <Copyright>Copyright (c) 2026 Ryan Robson</Copyright>
     <Description>Inverts the colors of individual chosen windows.</Description>
     <ApplicationIcon>..\..\assets\WindowInvert.ico</ApplicationIcon>

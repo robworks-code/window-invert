@@ -124,3 +124,5 @@ not been through much real use yet.
 ## License
 
 MIT. See `LICENSE`.
+
+Written by Ryan Robson and published by Robworks Software.

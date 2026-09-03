@@ -13,7 +13,7 @@
 
 #define AppName "Window Invert"
 #define AppExe "WindowInvert.App.exe"
-#define AppPublisher "Ryan Robson"
+#define AppPublisher "Robworks Software"
 #define AppUrl "https://github.com/robworks-code/window-invert"
 
 [Setup]
